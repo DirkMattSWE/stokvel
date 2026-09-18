@@ -167,7 +167,7 @@ single amount on a single row cannot express that.
 | Target pot | `contribution_amount × COUNT(member)` |
 | Outstanding on one debt | `debt.amount − SUM(allocation.amount WHERE debt_id = ?)` |
 | A member's total arrears | Sum of the above across their debtor rows |
-| Current cycle | Earliest cycle with `due_date ≥ current_date`, or earliest with no payout row |
+| Current cycle | Earliest cycle with no payout row — `CycleRepository.findOpenCycle()`, see below |
 | Rotation length | `COUNT(member)` — equals `COUNT(cycle)` |
 | Who is behind | Expected vs actual allocations, per member per cycle |
 | Net received at payout | `payout.amount_paid − SUM(allocations from payments WHERE payout_id = ?)` |
@@ -315,6 +315,43 @@ unless properties genuinely fail.
 **No update or delete paths anywhere** — see above. Do not scaffold them as stubs
 "to fill in later."
 
+### Repository conventions
+
+**`findOpenCycle()` defines the current cycle as *the earliest cycle with no payout
+row*** — not the earliest with `due_date ≥ current_date`. The two disagree on the due
+date itself, once the payout has fired: the date version still points at the
+just-paid cycle, so a payment recorded that afternoon allocates into a pot nobody
+will ever receive. The payout row's existence is what closes a cycle, so the handover
+is instant and mid-day — no gap, no configured cut-off time, no extra column. It also
+takes no date parameter, which makes a Rule 8 violation structurally impossible there.
+Empty result means the rotation is complete.
+
+**`findDueCycles()` returns a `List`, oldest `due_date` first.** Advancing the clock
+several months makes several cycles due at once; each payout writes debt rows and can
+generate an auto-deduction payment, so it changes what the next payout sees. Order is
+load-bearing, not cosmetic. An `Optional` here would silently skip payouts on any
+multi-month jump.
+
+**Every `SUM` is wrapped in `COALESCE(…, 0.00)`.** A sum over zero rows is `null`, and
+the first outstanding-debt calculation on a brand-new debt would throw. Zero
+allocations against a debt is a real, knowable zero — not missing data — so the
+fallback belongs in the query, not in an `Optional` every caller unwraps. The `0.00`
+literal rather than `0` stops Hibernate inferring `Integer` for that branch.
+
+**Traversing a nullable FK uses `LEFT JOIN FETCH`, never plain `JOIN FETCH`.**
+`allocation.debt_id` is null for allocations to a cycle, and an inner join drops those
+rows silently — working-looking code that loses half the ledger. The `FETCH` half is
+what avoids N+1 when the ledger walks allocation → debt → creditor to name who a
+deduction settled with. Safe here because every hop is `@ManyToOne`; fetch-joining
+collections is the case that causes cartesian blow-ups.
+
+**Net received at payout reads `payment.amount` via `findByPayoutId`, not a re-sum of
+allocations.** A deduction payment is fully allocated to debts by construction, so the
+two agree — and "R200 was deducted from your payout" is the more honest framing of a
+display figure than reconstructing it from the debt accounting underneath. The
+allocation rows are still fetched separately for the *breakdown* (which creditors),
+since that is the one thing `payment.amount` cannot tell you.
+
 ### Testing
 
 Test-driven for the service layer. Not for transport.
@@ -353,6 +390,36 @@ If buy-in does not make the build, it is presented as a specified-and-scoped rul
 
 Auth, mobile responsiveness, real money/EFT/payment gateways, email/SMS/push,
 background scheduler (the clock control does that job).
+
+---
+
+## Open items
+
+Decisions deliberately left until the code that forces them exists. None are
+oversights; each is recorded so it gets decided rather than assumed.
+
+**`StokvelConfigRepository` is not in the package layout above, but `current_date` has
+to persist.** `ClockService` mutates it and `StokvelSetupService` creates the singleton
+row, so something must save it. Almost certainly a thin
+`JpaRepository<StokvelConfig, Long>` — decide explicitly when building `ClockService`
+rather than silently adding a repository the spec never named.
+
+**`pom.xml` currently has H2, not SQLite.** The spec says SQLite with MySQL as the
+fallback; H2 appears in neither. Harmless so far — JPA annotations are dialect-agnostic
+— but it has to be settled before `schema.sql` and `application.properties` are
+written, since the hand-written DDL is dialect-specific.
+
+**"Who is behind" has no repository method yet.** The JPQL is known —
+`SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?` — but the spec
+describes it as a *comparison* (expected vs actual, per member per cycle), and whether
+`ArrearsService` wants one member, every member for a cycle, or a DTO with both sides
+changes the signature. Write it when `ArrearsService` says which.
+
+**JPQL in `@Query` is not checked by `mvn compile`** — those are just strings until
+Hibernate parses them at startup. `LIMIT 1` in HQL, the `NOT EXISTS` subqueries and the
+`COALESCE` typing are all still unverified. First app boot or `@DataJpaTest` is where
+they get their first real test; if `LIMIT 1` is rejected, return a `List` and take the
+first element.
 
 ---
 
