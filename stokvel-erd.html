@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stokvel ERD</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --surface-alt: #f4f4f2;
+    --text: #1a1a18;
+    --text-dim: #5f5e5a;
+    --border: #d3d1c7;
+    --header-bg: #1a1a18;
+    --header-text: #ffffff;
+    --accent: #0f6e56;
+    --danger: #a32d2d;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1a1a18;
+      --surface: #242422;
+      --surface-alt: #2c2c2a;
+      --text: #e8e6dd;
+      --text-dim: #9c9a92;
+      --border: #444441;
+      --header-bg: #0d0d0c;
+      --header-text: #ffffff;
+      --accent: #5dcaa5;
+      --danger: #f09595;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a18;
+    --surface: #242422;
+    --surface-alt: #2c2c2a;
+    --text: #e8e6dd;
+    --text-dim: #9c9a92;
+    --border: #444441;
+    --header-bg: #0d0d0c;
+    --header-text: #ffffff;
+    --accent: #5dcaa5;
+    --danger: #f09595;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2rem 1.25rem 4rem;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  h1 { font-size: 1.6rem; font-weight: 600; margin: 0 0 .25rem; }
+  h2 {
+    font-size: 1.15rem; font-weight: 600;
+    margin: 2.5rem 0 .75rem; padding-bottom: .4rem;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: 1rem; font-weight: 600; margin: 1.5rem 0 .4rem; }
+  .sub { color: var(--text-dim); margin: 0 0 1.5rem; font-size: .95rem; }
+
+  .diagram-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    overflow-x: auto;
+    margin-bottom: .5rem;
+  }
+  #erd { min-width: 900px; }
+  .hint { font-size: .85rem; color: var(--text-dim); margin: 0 0 1rem; }
+
+  table {
+    width: 100%; border-collapse: collapse;
+    font-size: .9rem; margin: .5rem 0 1rem;
+  }
+  th, td {
+    text-align: left; padding: .5rem .65rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    background: var(--surface-alt); font-weight: 600;
+    font-size: .8rem; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--text-dim);
+  }
+  td code, p code, li code {
+    background: var(--surface-alt); padding: .1rem .35rem;
+    border-radius: 4px; font-size: .88em;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  .entity {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 1rem; overflow: hidden;
+  }
+  .entity-head {
+    background: var(--header-bg); color: var(--header-text);
+    padding: .6rem .9rem; font-weight: 600; font-size: .95rem;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    letter-spacing: .03em;
+  }
+  .entity-body { padding: .75rem .9rem 1rem; }
+  .entity table { margin: 0; }
+  .entity-note {
+    font-size: .85rem; color: var(--text-dim);
+    margin: .6rem 0 0; padding-top: .6rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .rule {
+    border-left: 3px solid var(--accent); border-radius: 0;
+    padding: .5rem 0 .5rem .9rem; margin: .9rem 0;
+    background: transparent;
+  }
+  .rule strong { display: block; margin-bottom: .15rem; }
+  .rule span { font-size: .9rem; color: var(--text-dim); }
+
+  .warn { border-left-color: var(--danger); }
+
+  ul { padding-left: 1.2rem; margin: .5rem 0; }
+  li { margin-bottom: .35rem; }
+
+  .pill {
+    display: inline-block; font-size: .72rem; font-weight: 600;
+    padding: .1rem .4rem; border-radius: 4px;
+    background: var(--surface-alt); color: var(--text-dim);
+    border: 1px solid var(--border); margin-left: .35rem;
+    letter-spacing: .03em;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Stokvel — entity relationship diagram</h1>
+<p class="sub">Single-stokvel MVP. Spring Boot + React + STOMP + SQLite. Append-only ledger; every total is derived.</p>
+
+<div class="diagram-box"><div id="erd"></div></div>
+<p class="hint">Scroll horizontally if the diagram is wider than your screen.</p>
+
+<h2>Reading the notation</h2>
+<table>
+  <thead><tr><th>Symbol</th><th>Min</th><th>Max</th><th>Means</th></tr></thead>
+  <tbody>
+    <tr><td><code>||</code></td><td>1</td><td>1</td><td>Exactly one, required</td></tr>
+    <tr><td><code>|o</code></td><td>0</td><td>1</td><td>Zero or one, optional</td></tr>
+    <tr><td><code>|{</code></td><td>1</td><td>many</td><td>One or many, required</td></tr>
+    <tr><td><code>o{</code></td><td>0</td><td>many</td><td>Zero or many, optional</td></tr>
+  </tbody>
+</table>
+
+<h2>Entities</h2>
+
+<div class="entity">
+  <div class="entity-head">stokvel_config</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK — always 1</td></tr>
+        <tr><td><code>contribution_amount</code></td><td>DECIMAL</td><td>Fixed per member per cycle</td></tr>
+        <tr><td><code>current_date</code></td><td>DATE</td><td>The system's notion of "today" (Rule 8)</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">Singleton row. No foreign keys in or out — its isolation in the diagram is the proof it is config, not a relational parent. <strong>The only mutable value in the entire schema</strong> is <code>current_date</code>, and only because it cannot be derived from anything else.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">member</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>name</code></td><td>TEXT</td><td></td></tr>
+        <tr><td><code>created_at</code></td><td>TIMESTAMP</td><td>Implies rotation position (Rule 5)</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">No stored <code>position</code> — rotation order is creation order, never reordered. No <code>debt</code> column — outstanding debt is a query. No <code>is_active</code> — Rule 3's mid-cycle exclusion derives from <code>created_at</code> vs the cycle's <code>due_date</code>.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">cycle</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>sequence_number</code></td><td>INTEGER</td><td>Round 1..N — human-readable identity</td></tr>
+        <tr><td><code>due_date</code></td><td>DATE</td><td>What the clock compares against</td></tr>
+        <tr><td><code>recipient_id</code></td><td>INTEGER</td><td>FK → member, fixed at creation</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">One row per round. No start date — a cycle's start is the previous cycle's due date. The rotation as a whole is <code>MIN</code>/<code>MAX</code>/<code>COUNT</code> over these rows, not a separate entity. <code>sequence_number</code> is technically derivable from date order, but cycles are never reordered or deleted, so it has no drift path — kept for query and UI readability.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">payment</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>member_id</code></td><td>INTEGER</td><td>FK → member</td></tr>
+        <tr><td><code>amount</code></td><td>DECIMAL</td><td>Raw fact: money arrived</td></tr>
+        <tr><td><code>payout_id</code></td><td>INTEGER</td><td>FK → payout, <em>nullable</em> — set when auto-generated by an arrears deduction</td></tr>
+        <tr><td><code>created_at</code></td><td>TIMESTAMP</td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">No <code>cycle_id</code> — which cycle a payment counts toward is the allocation's job, not the payment's. That separation is what makes Rule 7 a logic change rather than a rewrite. <code>payout_id</code> marks a payment as system-generated rather than voluntary — an explicit link, never inferred from timing.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">allocation</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>payment_id</code></td><td>INTEGER</td><td>FK → payment, NOT NULL</td></tr>
+        <tr><td><code>cycle_id</code></td><td>INTEGER</td><td>FK → cycle, <em>nullable</em></td></tr>
+        <tr><td><code>debt_id</code></td><td>INTEGER</td><td>FK → debt, <em>nullable</em></td></tr>
+        <tr><td><code>amount</code></td><td>DECIMAL</td><td>This slice of the payment</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note"><strong>Exactly one of <code>cycle_id</code> / <code>debt_id</code> must be set.</strong> Enforced in the service layer (a CHECK constraint is optional belt-and-braces). An allocation is a <em>slice</em> of a payment, not a monthly total — one payment produces one row per destination. Buy-ins deliberately do <em>not</em> allocate here; a third destination type would push this into polymorphic-FK territory.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">debt</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>debtor_id</code></td><td>INTEGER</td><td>FK → member — who failed to pay</td></tr>
+        <tr><td><code>creditor_id</code></td><td>INTEGER</td><td>FK → member — who was under-paid</td></tr>
+        <tr><td><code>cycle_id</code></td><td>INTEGER</td><td>FK → cycle — which round caused it</td></tr>
+        <tr><td><code>amount</code></td><td>DECIMAL</td><td>Immutable. Never decremented.</td></tr>
+        <tr><td><code>created_at</code></td><td>TIMESTAMP</td><td>Drives oldest-first settlement order</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">Two foreign keys to the same table — this is an ordinary entity with two roles, not a junction table. <strong>No <code>status</code> column, no <code>amount_remaining</code>.</strong> A flag can disagree with the allocation rows; the subtraction cannot, and it handles partial settlement for free. One member can appear in many rows, in either column.</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">payout</div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>cycle_id</code></td><td>INTEGER</td><td>FK → cycle</td></tr>
+        <tr><td><code>recipient_id</code></td><td>INTEGER</td><td>FK → member</td></tr>
+        <tr><td><code>amount_paid</code></td><td>DECIMAL</td><td><strong>Gross</strong> — before arrears deduction</td></tr>
+        <tr><td><code>created_at</code></td><td>TIMESTAMP</td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">A single event, not a date range — the range belongs to the cycle. Nothing allocates <em>to</em> a payout; money flows out, not in. Net received is derived, not stored (see below).</p>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">buyin <span class="pill">build last</span></div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>member_id</code></td><td>INTEGER</td><td>FK → member — the joiner</td></tr>
+        <tr><td><code>amount</code></td><td>DECIMAL</td><td>Total gap they cover</td></tr>
+        <tr><td><code>created_at</code></td><td>TIMESTAMP</td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="entity">
+  <div class="entity-head">buyin_distribution <span class="pill">build last</span></div>
+  <div class="entity-body">
+    <table>
+      <thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>id</code></td><td>INTEGER</td><td>PK</td></tr>
+        <tr><td><code>buyin_id</code></td><td>INTEGER</td><td>FK → buyin</td></tr>
+        <tr><td><code>recipient_id</code></td><td>INTEGER</td><td>FK → member — an already-paid member</td></tr>
+        <tr><td><code>amount</code></td><td>DECIMAL</td><td>Their share of the top-up</td></tr>
+      </tbody>
+    </table>
+    <p class="entity-note">Same event-then-distribution shape as payment/allocation. Needed because one buy-in splits across several already-paid members proportionally to their gap (Rule 4) — a single amount on a single row cannot express that.</p>
+  </div>
+</div>
+
+<h2>Everything that is derived, never stored</h2>
+<table>
+  <thead><tr><th>Question</th><th>Query</th></tr></thead>
+  <tbody>
+    <tr><td>Pot for a cycle</td><td><code>SUM(allocation.amount) WHERE cycle_id = ?</code></td></tr>
+    <tr><td>Target pot</td><td><code>contribution_amount × COUNT(member)</code></td></tr>
+    <tr><td>Outstanding on one debt</td><td><code>debt.amount − SUM(allocation.amount WHERE debt_id = ?)</code></td></tr>
+    <tr><td>A member's total arrears</td><td>Sum of the above across their debtor rows</td></tr>
+    <tr><td>Current cycle</td><td>Earliest cycle with <code>due_date ≥ current_date</code>, or earliest with no payout row</td></tr>
+    <tr><td>Rotation length</td><td><code>COUNT(member)</code> — equals <code>COUNT(cycle)</code></td></tr>
+    <tr><td>Who is behind</td><td>Expected vs actual allocations per member per cycle</td></tr>
+    <tr><td>Net received at payout</td><td><code>payout.amount_paid − SUM(allocations from payments WHERE payout_id = ?)</code></td></tr>
+    <tr><td>The ledger itself</td><td>Union of payment / allocation / debt / payout / buyin rows in timestamp order</td></tr>
+  </tbody>
+</table>
+
+<h2>Rules the schema encodes</h2>
+
+<div class="rule">
+  <strong>Rule 1 — payout fires on the due date</strong>
+  <span>The clock compares <code>stokvel_config.current_date</code> against <code>cycle.due_date</code>. Nothing else triggers a payout.</span>
+</div>
+
+<div class="rule">
+  <strong>Rule 2 — shortfall becomes tracked debt</strong>
+  <span>One debt row per non-payer, naming the under-paid recipient as creditor. Appended, never mutated.</span>
+</div>
+
+<div class="rule">
+  <strong>Rule 5 — rotation order fixed at creation</strong>
+  <span><code>member.created_at</code> is the order. <code>cycle.recipient_id</code> is set once, at cycle creation.</span>
+</div>
+
+<div class="rule">
+  <strong>Rule 6 — arrears deducted, payout never blocked</strong>
+  <span>Payout records gross. The deduction is a real payment row with <code>payout_id</code> set, whose allocations settle the debts. Keeps allocation uniform: every allocation has a payment.</span>
+</div>
+
+<div class="rule">
+  <strong>Rule 7 — debt settles first, oldest first</strong>
+  <span>A payment's allocations clear outstanding debts in <code>created_at</code> order, remainder flows to the current cycle's pot. Only the allocation logic changes; pot and ledger queries are untouched.</span>
+</div>
+
+<div class="rule warn">
+  <strong>Rule 7 — standing risk, deliberately visible</strong>
+  <span>A member paid out early can accrue debt with no future payout to deduct from. The software cannot compel repayment. The debt sits on the ledger indefinitely — visibility is the enforcement mechanism, not a mechanism the schema pretends to have.</span>
+</div>
+
+<h2>Explicitly not tables</h2>
+<ul>
+  <li><strong>Ledger</strong> — a view over existing rows in timestamp order. A table would be a second source of truth needing sync.</li>
+  <li><strong>Rotation</strong> — <code>MIN</code>/<code>MAX</code>/<code>COUNT</code> over cycle rows.</li>
+  <li><strong>Stokvel</strong> (as a relational parent) — single deployment, so config is a singleton row with no relationships.</li>
+</ul>
+
+<h2>The smell test</h2>
+<p>If you write <code>pot += amount</code> or <code>member.debt -= amount</code>, the model has been violated. Same test one level up: if an entity or column exists only to cache a fact you could query from other rows, it should not exist. Ask <em>"is this a new fact, or the answer to a question I could ask the existing tables?"</em></p>
+<p>The one deliberate exception is <code>cycle.sequence_number</code> — derivable in principle, but cycle rows are never reordered or deleted, so it has no drift path.</p>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+(function () {
+  var ENTITIES = ['STOKVEL_CONFIG','MEMBER','CYCLE','PAYMENT','ALLOCATION','DEBT','PAYOUT','BUYIN_DISTRIBUTION','BUYIN'];
+
+  function isDark() {
+    var t = document.documentElement.getAttribute('data-theme');
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  var dark = isDark();
+  var textColor   = dark ? '#e8e6dd' : '#1a1a18';
+  var rowOdd      = dark ? '#2c2c2a' : '#f4f4f2';
+  var rowEven     = dark ? '#242422' : '#ffffff';
+  var borderColor = dark ? '#5f5e5a' : '#888780';
+  var lineColor   = dark ? '#9c9a92' : '#73726c';
+  var headerBg    = dark ? '#0d0d0c' : '#1a1a18';
+
+  var SRC = [
+    'erDiagram',
+    '  MEMBER ||--o{ PAYMENT : makes',
+    '  MEMBER ||--o{ PAYOUT : receives',
+    '  MEMBER ||--o{ CYCLE : "is recipient of"',
+    '  MEMBER ||--o{ DEBT : owes',
+    '  MEMBER ||--o{ DEBT : "is owed"',
+    '  MEMBER ||--o{ BUYIN : pays',
+    '  MEMBER ||--o{ BUYIN_DISTRIBUTION : "tops up"',
+    '  PAYMENT ||--o{ ALLOCATION : "splits into"',
+    '  PAYOUT ||--o| PAYMENT : "auto-deducts via"',
+    '  CYCLE ||--o{ ALLOCATION : "receives into pot"',
+    '  DEBT ||--o{ ALLOCATION : "settled by"',
+    '  CYCLE ||--o| PAYOUT : "closes with"',
+    '  CYCLE ||--o{ DEBT : originates',
+    '  BUYIN ||--o{ BUYIN_DISTRIBUTION : "splits into"',
+    '',
+    '  STOKVEL_CONFIG {',
+    '    int id PK',
+    '    decimal contribution_amount',
+    '    date current_date',
+    '  }',
+    '  MEMBER {',
+    '    int id PK',
+    '    string name',
+    '    timestamp created_at',
+    '  }',
+    '  CYCLE {',
+    '    int id PK',
+    '    int sequence_number',
+    '    date due_date',
+    '    int recipient_id FK',
+    '  }',
+    '  PAYMENT {',
+    '    int id PK',
+    '    int member_id FK',
+    '    decimal amount',
+    '    int payout_id FK',
+    '    timestamp created_at',
+    '  }',
+    '  ALLOCATION {',
+    '    int id PK',
+    '    int payment_id FK',
+    '    int cycle_id FK',
+    '    int debt_id FK',
+    '    decimal amount',
+    '  }',
+    '  DEBT {',
+    '    int id PK',
+    '    int debtor_id FK',
+    '    int creditor_id FK',
+    '    int cycle_id FK',
+    '    decimal amount',
+    '    timestamp created_at',
+    '  }',
+    '  PAYOUT {',
+    '    int id PK',
+    '    int cycle_id FK',
+    '    int recipient_id FK',
+    '    decimal amount_paid',
+    '    timestamp created_at',
+    '  }',
+    '  BUYIN {',
+    '    int id PK',
+    '    int member_id FK',
+    '    decimal amount',
+    '    timestamp created_at',
+    '  }',
+    '  BUYIN_DISTRIBUTION {',
+    '    int id PK',
+    '    int buyin_id FK',
+    '    int recipient_id FK',
+    '    decimal amount',
+    '  }'
+  ].join('\n');
+
+  function paintHeaders(svgEl) {
+    var texts = svgEl.querySelectorAll('text');
+    for (var i = 0; i < texts.length; i++) {
+      var t = texts[i];
+      var content = (t.textContent || '').trim().toUpperCase();
+      if (ENTITIES.indexOf(content) === -1) continue;
+      var bbox;
+      try { bbox = t.getBBox(); } catch (e) { continue; }
+      var pad = 7;
+      var r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      r.setAttribute('x', bbox.x - pad);
+      r.setAttribute('y', bbox.y - pad);
+      r.setAttribute('width', bbox.width + pad * 2);
+      r.setAttribute('height', bbox.height + pad * 2);
+      r.setAttribute('fill', headerBg);
+      t.parentNode.insertBefore(r, t);
+      t.setAttribute('fill', '#ffffff');
+      t.style.fill = '#ffffff';
+    }
+  }
+
+  function render() {
+    if (!window.mermaid) {
+      document.getElementById('erd').innerHTML =
+        '<p style="color:var(--text-dim)">Diagram library could not load. The full schema is written out in the tables below.</p>';
+      return;
+    }
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        darkMode: dark,
+        fontSize: '15px',
+        lineColor: lineColor,
+        textColor: textColor,
+        primaryTextColor: textColor,
+        primaryColor: rowEven,
+        primaryBorderColor: borderColor,
+        tertiaryColor: rowOdd,
+        attributeBackgroundColorOdd: rowOdd,
+        attributeBackgroundColorEven: rowEven
+      },
+      er: { entityPadding: 18, fontSize: 15, useMaxWidth: false }
+    });
+    mermaid.render('erd-svg', SRC).then(function (res) {
+      var host = document.getElementById('erd');
+      host.innerHTML = res.svg;
+      var svgEl = host.querySelector('svg');
+      if (!svgEl) return;
+      var allText = svgEl.querySelectorAll('text');
+      for (var i = 0; i < allText.length; i++) {
+        allText[i].setAttribute('fill', textColor);
+      }
+      paintHeaders(svgEl);
+    }).catch(function () {
+      document.getElementById('erd').innerHTML =
+        '<p style="color:var(--text-dim)">Diagram failed to render. The full schema is written out in the tables below.</p>';
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', render);
+  } else {
+    render();
+  }
+})();
+</script>
+</body>
+</html>
