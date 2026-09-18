@@ -249,6 +249,93 @@ structurally nothing to tamper with.
 STOMP. Clients subscribe once and re-render from pushed state — they do not poll and do
 not recompute authoritative values locally.
 
+`LedgerBroadcaster` is called **directly** by services at the end of each mutating
+method — not wired through Spring's application-event mechanism. Events would be the
+tidier decoupling; the direct call is one line, obvious in a demo walkthrough, and
+deliberately chosen over ceremony for a build this size.
+
+### Package layout
+
+Controller → service → repository layering. React is the view; there is no view layer
+in the backend, so this is not MVC in the strict sense even though Spring MVC serves
+the controller tier.
+
+```
+src/main/java/com/stokvel/
+├── StokvelApplication.java
+├── config/
+│   └── WebSocketConfig.java        STOMP broker, /topic/ledger
+├── model/                          one class per table, no clever inheritance
+│   ├── StokvelConfig.java   ├── Debt.java
+│   ├── Member.java          ├── Payout.java
+│   ├── Cycle.java           ├── Buyin.java
+│   ├── Payment.java         └── BuyinDistribution.java
+│   └── Allocation.java
+├── repository/                     Spring Data JPA interfaces, thin
+│   └── MemberRepository.java, CycleRepository.java, PaymentRepository.java,
+│       AllocationRepository.java, DebtRepository.java, PayoutRepository.java
+├── service/                        ALL business logic lives here
+│   ├── StokvelSetupService.java    create config, add members
+│   ├── PaymentService.java         recordPayment → allocation logic (Rule 7)
+│   ├── ClockService.java           advanceClock, checkDue (Rule 8)
+│   ├── PayoutService.java          fires payout, arrears deduction (Rule 6)
+│   ├── ArrearsService.java         derived debt queries
+│   └── LedgerService.java          the union query
+├── controller/                     thin; calls services only
+│   └── SetupController.java, PaymentController.java, ClockController.java,
+│       LedgerController.java
+├── websocket/
+│   └── LedgerBroadcaster.java
+└── dto/                            what actually crosses the wire
+
+src/main/resources/
+├── application.properties
+└── schema.sql
+```
+
+### Conventions that are not negotiable
+
+**No `interface` + `Impl` pairs.** One implementation of each service exists and always
+will. `PaymentService` is a class, not an interface with a `PaymentServiceImpl` behind
+it. Generating both is ceremony, not architecture.
+
+**No `component/` package.** (`@Service`, `@Repository` and `@Controller` are already
+Spring stereotypes of `@Component` — the instruction is about package layout, not about
+avoiding those annotations.)
+
+**Explicit `schema.sql`, with `spring.jpa.hibernate.ddl-auto=none`.** Hibernate's
+auto-DDL is unreliable against the community SQLite dialect. Writing the DDL by hand
+costs twenty minutes and removes a whole class of missing-column debugging. The dialect
+and driver are configured in `application.properties` — no `DataSourceConfig` class
+unless properties genuinely fail.
+
+**DTOs cross the wire, never JPA entities.** `Debt` carries two foreign keys back to
+`Member`; serialising entities directly produces lazy-loading and Jackson cycles.
+
+**No update or delete paths anywhere** — see above. Do not scaffold them as stubs
+"to fill in later."
+
+### Testing
+
+Test-driven for the service layer. Not for transport.
+
+**TDD these:**
+- `PayoutService` and `ClockService` — Rules 1, 6, 8, 9. The rules are already written
+  as assertions; a due date arriving against a short pot is a test before it is a method.
+- `PaymentService` allocation logic — Rule 7. A test asserting one payment splits across
+  a debt and the current pot is the clearest evidence the `Payment`/`Allocation` split
+  was not pointless indirection.
+- The derived queries — pot, arrears, net received. Cheap to write, and they are the
+  guard against a later "optimisation" that caches a total.
+
+**Do not TDD:** controllers, STOMP plumbing, DTO mapping. Write them, smoke-test by hand.
+
+**Why the suite is deterministic:** business logic never reads system time (Rule 8), so
+the clock is injected state, not ambient state. No `Thread.sleep`, no mocking of
+`LocalDate.now()`, no flaky time-dependent tests. Set `current_date`, call the method,
+assert. Rule 8 was chosen for the demo; making the tests trivial is a side effect worth
+saying out loud.
+
 ---
 
 ## Build order
