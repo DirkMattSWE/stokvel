@@ -29,6 +29,14 @@ public class Cycle {
     @Column(name = "sequence_number", nullable = false)
     private Integer sequenceNumber;
 
+    /**
+     * Which rotation this cycle belongs to. Not derivable from sequence_number once
+     * the member count changes mid-stream, since rotations are generated one at a
+     * time from whoever is a member at that moment.
+     */
+    @Column(name = "rotation_number", nullable = false)
+    private Integer rotationNumber;
+
     @Column(name = "due_date", nullable = false)
     private LocalDate dueDate;
 
@@ -40,8 +48,9 @@ public class Cycle {
         // JPA
     }
 
-    public Cycle(Integer sequenceNumber, LocalDate dueDate, Member recipient) {
+    public Cycle(Integer sequenceNumber, Integer rotationNumber, LocalDate dueDate, Member recipient) {
         this.sequenceNumber = sequenceNumber;
+        this.rotationNumber = rotationNumber;
         this.dueDate = dueDate;
         this.recipient = recipient;
     }
@@ -52,6 +61,10 @@ public class Cycle {
 
     public Integer getSequenceNumber() {
         return sequenceNumber;
+    }
+
+    public Integer getRotationNumber() {
+        return rotationNumber;
     }
 
     public LocalDate getDueDate() {

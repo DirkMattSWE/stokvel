@@ -31,3 +31,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# SQLite runtime database — a fact of this machine's demo state, not source
+stokvel.db
+stokvel.db-*

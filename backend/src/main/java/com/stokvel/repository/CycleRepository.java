@@ -14,6 +14,25 @@ public interface CycleRepository extends JpaRepository<Cycle, Long> {
     List<Cycle> findAllByOrderBySequenceNumberAsc();
 
     /**
+     * The tail of the rotation — the most recently appended cycle. New cycles chain
+     * their due_date off this one rather than off config.current_date, because
+     * current_date moves as the clock advances (Rule 8) and a member joining in
+     * month three would otherwise be given a due date computed from month three.
+     *
+     * Ordered by sequence_number rather than due_date: it is UNIQUE and strictly
+     * monotonic, so there is no tie for "last" even in principle.
+     */
+    Optional<Cycle> findTopByOrderBySequenceNumberDesc();
+
+    /**
+     * Cycles with their recipient already loaded, for read endpoints that name the
+     * member. Plain JOIN FETCH, not LEFT: recipient_id is NOT NULL, so there is no
+     * row for an inner join to silently drop.
+     */
+    @Query("SELECT c FROM Cycle c JOIN FETCH c.recipient ORDER BY c.sequenceNumber ASC")
+    List<Cycle> findAllWithRecipient();
+
+    /**
      * The cycle whose pot is still open — the first one that has not paid out yet.
      * Payments allocate here.
      *

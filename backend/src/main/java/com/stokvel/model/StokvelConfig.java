@@ -22,17 +22,29 @@ public class StokvelConfig {
     @Column(name = "contribution_amount", nullable = false)
     private BigDecimal contributionAmount;
 
-    @Column(name = "current_date", nullable = false)
+    // Backtick-quoted deliberately: CURRENT_DATE is a SQLite literal keyword, and
+    // an unquoted reference to this column resolves to the OS's today instead of
+    // the stored value — silently. schema.sql quotes it for the same reason.
+    @Column(name = "`current_date`", nullable = false)
     private LocalDate currentDate;
+
+    /**
+     * How many full rotations this stokvel runs. Fixed at creation and never
+     * changed — the members already paid out must not be able to extend the
+     * commitment of the members still waiting.
+     */
+    @Column(name = "rotation_count", nullable = false)
+    private Integer rotationCount;
 
     protected StokvelConfig() {
         // JPA
     }
 
-    public StokvelConfig(Long id, BigDecimal contributionAmount, LocalDate currentDate) {
+    public StokvelConfig(Long id, BigDecimal contributionAmount, LocalDate currentDate, Integer rotationCount) {
         this.id = id;
         this.contributionAmount = contributionAmount;
         this.currentDate = currentDate;
+        this.rotationCount = rotationCount;
     }
 
     public Long getId() {
@@ -45,6 +57,10 @@ public class StokvelConfig {
 
     public LocalDate getCurrentDate() {
         return currentDate;
+    }
+
+    public Integer getRotationCount() {
+        return rotationCount;
     }
 
     /**

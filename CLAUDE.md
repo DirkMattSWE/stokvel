@@ -39,9 +39,19 @@ Singleton row (`id = 1`). No foreign keys in or out.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | INTEGER PK | Always 1 |
+| `id` | INTEGER PK | Always 1 — `CHECK (id = 1)` |
 | `contribution_amount` | DECIMAL | Fixed, per member per cycle |
 | `current_date` | DATE | The system's notion of "today" (Rule 8) |
+| `rotation_count` | INTEGER | How many full rotations this stokvel runs (Rule 9) |
+
+`rotation_count` is fixed at creation and never changed. That is a governance decision,
+not a technical one: if it could be revised mid-stream, the members already paid out
+could vote to extend the commitment the members still waiting are carrying.
+
+**`current_date` is quoted — `"current_date"` in DDL, `` `current_date` `` in the entity.**
+`CURRENT_DATE` is a SQLite literal keyword. Unquoted, `SELECT current_date FROM
+stokvel_config` returns the operating system's today instead of the stored value,
+silently and with no error — the exact Rule 8 violation this column exists to prevent.
 
 ### `member`
 
@@ -61,9 +71,15 @@ One row per round.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PK | |
-| `sequence_number` | INTEGER | Round 1..N |
+| `sequence_number` | INTEGER | Round 1..N, globally monotonic, UNIQUE |
+| `rotation_number` | INTEGER | Which rotation this cycle belongs to (Rule 9) |
 | `due_date` | DATE | What the clock compares against |
 | `recipient_id` | INTEGER FK → member | Fixed at cycle creation |
+
+`rotation_number` earns its place on the same argument as `sequence_number`: cycles are
+never reordered, so it has no drift path. It cannot be derived from `sequence_number`
+alone, because once the member count changes mid-stream the rotations have different
+lengths and there is no arithmetic that recovers the boundary.
 
 No start date — a cycle's start is the previous cycle's due date. The rotation as a
 whole is `MIN`/`MAX`/`COUNT` over these rows, never a separate entity.
@@ -197,7 +213,7 @@ does **not** enter the current pot.
 
 **Rule 6 — arrears never block a payout.** The member still receives their turn; their
 outstanding debt is deducted from what they receive. `payout = max(0, pot - outstanding_debt)`
-— write the floor defensively even though Rule 9 makes it structurally unreachable.
+— and with multiple rotations that floor genuinely fires; see Rule 9.
 
 Mechanically: the payout row records **gross**. The deduction is a real `payment` row
 with `payout_id` set, whose allocations settle the debts. This keeps `allocation`
@@ -228,9 +244,24 @@ Cycle boundary is end of month. An advance function moves the date, then asks th
 what has become due — **it does not pay anyone out.** The payout fires on its own because
 the date is due. Same code path in production, just driven by real time.
 
-**Rule 9 — rotation length = member count.** Derived, not hard-coded. Single rotation for
-MVP. This bound is what guarantees a member's maximum debt cannot exceed one pot, which
-is why the `max(0, …)` floor never fires in practice.
+**Rule 9 — rotation length = member count, and the stokvel runs `rotation_count` of them.**
+Length is derived, never hard-coded. The number of rotations is fixed at creation.
+
+**Rotations are generated one at a time, never in advance.** Adding a member appends
+exactly one cycle, at the tail of the current rotation — which is why `addMember` writes
+both rows and why Rule 3 needs no special case. The next rotation is generated as a whole
+only once the current one closes, reading the live member list at that moment, so a late
+joiner is simply present in it.
+
+Creating a member's cycles for every rotation up front does not work: appending them in
+batches produces the order A, A, B, B, C, C instead of A, B, C, A, B, C, and fixing that
+means inserting rows between existing ones. Renumbering is what `sequence_number`'s
+no-drift-path guarantee forbids.
+
+With more than one rotation, the `max(0, …)` floor in Rule 6 stops being unreachable. A
+member who takes the first pot and never contributes again owes four contributions by
+their second turn while the pot holds only three — they receive nothing and are still
+short. The floor is load-bearing, not decorative.
 
 ---
 
@@ -315,6 +346,34 @@ unless properties genuinely fail.
 **No update or delete paths anywhere** — see above. Do not scaffold them as stubs
 "to fill in later."
 
+### SQLite specifics that are not obvious
+
+**`date_class=text` on the JDBC URL.** SQLite has no date type. The driver's default is
+to store a `DATE` as epoch millis computed at *local* midnight, so a `current_date` of
+2026-01-15 written in SAST is 2026-01-14T22:00Z and reads back as the 14th on a machine
+running UTC. The clock — the one value the whole design protects — would silently shift
+by a day depending on where the app runs. Stored as ISO text there is no timezone in the
+picture, the value is readable in `sqlite3`, and ISO strings still order correctly for
+the `due_date <= :currentDate` comparison. Verified by writing the same date under
+UTC+2, UTC and UTC-8 and diffing what landed on disk.
+
+**`spring.datasource.hikari.maximum-pool-size=1`.** SQLite takes a write lock on the
+whole file. One connection removes any chance of `SQLITE_BUSY`; there is no concurrency
+here worth winning back.
+
+**`member.created_at` comes from the simulated clock, not `Instant.now()`.** It is
+business data: it decides rotation order, and compared against a cycle's due date it
+decides whether a late joiner was liable for the round already in progress. A wall-clock
+timestamp would make those answers depend on the day the demo is run. Consequence:
+members added on the same simulated day share a timestamp, so rotation order is
+`ORDER BY created_at, id` — `id` is append-only and monotonic, which settles ties without
+reintroducing a `position` column.
+
+**Business-rule refusals need HTTP status mapping.** `IllegalStateException` and
+`IllegalArgumentException` from the services surface as 500 with a stack trace in the
+body. A `@RestControllerAdvice` mapping them to 409 and 400 belongs in `controller/`.
+Transport, so not TDD'd.
+
 ### Repository conventions
 
 **`findOpenCycle()` defines the current cycle as *the earliest cycle with no payout
@@ -324,7 +383,11 @@ just-paid cycle, so a payment recorded that afternoon allocates into a pot nobod
 will ever receive. The payout row's existence is what closes a cycle, so the handover
 is instant and mid-day — no gap, no configured cut-off time, no extra column. It also
 takes no date parameter, which makes a Rule 8 violation structurally impossible there.
-Empty result means the rotation is complete.
+
+**Empty result means the current rotation is complete — not that the stokvel is over.**
+Under `rotation_count > 1` that is the signal to generate the next rotation from the
+live member list. Only when the completed rotation's `rotation_number` equals
+`rotation_count` is the stokvel actually finished.
 
 **`findDueCycles()` returns a `List`, oldest `due_date` first.** Advancing the clock
 several months makes several cycles due at once; each payout writes debt rows and can
@@ -386,6 +449,47 @@ saying out loud.
 
 If buy-in does not make the build, it is presented as a specified-and-scoped rule.
 
+### Service-by-service order within the spine
+
+The phase list above is the shape of the build; this is the actual sequence, chosen
+so each service only ever depends on ones already written — no service is started
+before the thing it calls exists.
+
+1. **`StokvelSetupService`** — `createStokvel()`, `addMember()`. No dependencies but
+   the repositories. `addMember()` writes the member and its one cycle in the same
+   call, which is what keeps Rule 9 an invariant rather than a step someone can skip.
+2. **`PaymentService` v1** — `findOpenCycle()`, write the payment, one allocation to
+   the cycle's pot. No debt logic yet — that is Rule 7, deferred to step 7.
+3. **`PayoutService` v1** — pot via `sumByCycleId`, write the payout row at gross.
+   No arrears deduction yet — that is Rule 6, deferred to step 6.
+4. **`ClockService`** — `advanceClock()` moves `current_date`, `checkDue()` walks
+   `findDueCycles()` in order and fires each through `PayoutService`. Depends on
+   `PayoutService` existing; nothing depends on `ClockService` in turn, so it is
+   safe to build once step 3 is done. Steps 2–4 close the spine.
+5. **`ArrearsService`** — the derived debt queries. Built before steps 6–7 rather
+   than after, because both of them need it.
+6. **`PayoutService` v2** — Rule 2 debt rows for the shortfall, Rule 6 auto-deduction
+   payment. This is also where rotation continuation lives (see below), since both
+   are consequences of one payout firing, not of the clock moving.
+7. **`PaymentService` v2** — Rule 7 debt-first allocation.
+8. **`LedgerService`**, DTOs, `LedgerBroadcaster`, then the remaining controllers,
+   then buy-in.
+
+**Rotation continuation belongs in `PayoutService`, not `ClockService`.** Whether a
+cycle was the last one in its rotation is only knowable once its payout has actually
+fired — it is a consequence of that specific payout, the same shape of fact as the
+debt rows Rule 2 writes there. `ClockService` stays exactly as thin as Rule 8 requires:
+it discovers due cycles and delegates, and never needs to know rotations exist.
+
+This also has to happen inline, inside the same call that fires the payout, not
+queued for later. `findDueCycles()` only returns cycles that already exist in the
+table at the moment it runs (see the repository conventions above on why its
+ordering is load-bearing). If a clock advance makes several cycles due in one call
+and the last one closes a rotation, the next rotation's cycles do not exist yet when
+`findDueCycles()` ran — so if that same clock advance was large enough to also make
+one of *those* cycles due, the only place that can be caught is inside the payout
+call that closes the previous rotation, generating the next rotation there and then.
+
 ## Out of scope
 
 Auth, mobile responsiveness, real money/EFT/payment gateways, email/SMS/push,
@@ -398,16 +502,14 @@ background scheduler (the clock control does that job).
 Decisions deliberately left until the code that forces them exists. None are
 oversights; each is recorded so it gets decided rather than assumed.
 
-**`StokvelConfigRepository` is not in the package layout above, but `current_date` has
-to persist.** `ClockService` mutates it and `StokvelSetupService` creates the singleton
-row, so something must save it. Almost certainly a thin
-`JpaRepository<StokvelConfig, Long>` — decide explicitly when building `ClockService`
-rather than silently adding a repository the spec never named.
+**~~`StokvelConfigRepository`~~ — settled.** Added as a thin
+`JpaRepository<StokvelConfig, Long>`, forced by `createStokvel()` needing to write the
+singleton row. No custom queries.
 
-**`pom.xml` currently has H2, not SQLite.** The spec says SQLite with MySQL as the
-fallback; H2 appears in neither. Harmless so far — JPA annotations are dialect-agnostic
-— but it has to be settled before `schema.sql` and `application.properties` are
-written, since the hand-written DDL is dialect-specific.
+**~~`pom.xml` has H2, not SQLite~~ — settled.** H2 and `spring-boot-h2console` removed;
+`org.xerial:sqlite-jdbc` (pinned) and `org.hibernate.orm:hibernate-community-dialects`
+(version from the Boot BOM) added. Dialect is
+`org.hibernate.community.dialect.SQLiteDialect`.
 
 **"Who is behind" has no repository method yet.** The JPQL is known —
 `SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?` — but the spec
@@ -415,7 +517,13 @@ describes it as a *comparison* (expected vs actual, per member per cycle), and w
 `ArrearsService` wants one member, every member for a cycle, or a DTO with both sides
 changes the signature. Write it when `ArrearsService` says which.
 
-**JPQL in `@Query` is not checked by `mvn compile`** — those are just strings until
+**~~JPQL in `@Query` unverified~~ — partially settled.** The app boots clean against
+SQLite with all repositories loaded, and Hibernate parses every `@Query` at startup, so
+`LIMIT 1` in HQL, the `NOT EXISTS` subqueries and the `COALESCE` typing are all accepted.
+What is still unverified is whether they return the *right rows* — parsing is not
+correctness. That is what the service-layer tests are for.
+
+**Original note, kept for the reasoning:** JPQL in `@Query` is not checked by `mvn compile` — those are just strings until
 Hibernate parses them at startup. `LIMIT 1` in HQL, the `NOT EXISTS` subqueries and the
 `COALESCE` typing are all still unverified. First app boot or `@DataJpaTest` is where
 they get their first real test; if `LIMIT 1` is rejected, return a `List` and take the
