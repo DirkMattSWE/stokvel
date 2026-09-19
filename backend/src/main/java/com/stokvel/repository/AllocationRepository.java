@@ -26,15 +26,20 @@ public interface AllocationRepository extends JpaRepository<Allocation, Long> {
     BigDecimal sumByDebtId(@Param("debtId") Long debtId);
 
     /**
-     * Every slice of one payment, with debt and creditor pulled in the same query
-     * so the ledger can name who was paid ("settles debt to Sarah, Thabo").
+     * Every slice of one payment, with cycle, debt and creditor pulled in the same
+     * query so the ledger can name where each slice went ("R200 to the March pot,
+     * R300 settling debt to Sarah").
      *
-     * LEFT, not inner: allocations to a cycle have debt null, and an inner join
-     * would silently drop them.
+     * LEFT, not inner, on every hop: an allocation has exactly one of cycle or debt,
+     * so an inner join on either would silently drop the other half of the rows.
+     * The FETCH half is what keeps DTO mapping working with open-in-view off — by
+     * the time a response is written there is nothing left to lazy-load.
      */
     @Query("SELECT a FROM Allocation a "
+            + "LEFT JOIN FETCH a.cycle "
             + "LEFT JOIN FETCH a.debt d "
             + "LEFT JOIN FETCH d.creditor "
-            + "WHERE a.payment.id = :paymentId")
+            + "WHERE a.payment.id = :paymentId "
+            + "ORDER BY a.id ASC")
     List<Allocation> findByPaymentId(@Param("paymentId") Long paymentId);
 }

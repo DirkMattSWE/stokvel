@@ -10,9 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.time.temporal.TemporalAdjusters;
 import java.util.Optional;
 
@@ -22,9 +20,6 @@ import java.util.Optional;
  */
 @Service
 public class StokvelSetupService {
-
-    /** stokvel_config is a singleton row; the schema enforces CHECK (id = 1). */
-    private static final Long CONFIG_ID = 1L;
 
     /** One member per month of the year. The rotation is the bound, not the stokvel. */
     private static final long MAX_MEMBERS = 12L;
@@ -61,7 +56,7 @@ public class StokvelSetupService {
     public StokvelConfig createStokvel(BigDecimal contributionAmount,
                                        LocalDate startDate,
                                        Integer rotationCount) {
-        if (configRepository.existsById(CONFIG_ID)) {
+        if (configRepository.existsById(StokvelConfigRepository.SINGLETON_ID)) {
             throw new IllegalStateException(
                     "This stokvel already exists. There is one, and it is never recreated.");
         }
@@ -75,8 +70,8 @@ public class StokvelSetupService {
             throw new IllegalArgumentException("A stokvel runs at least one rotation.");
         }
 
-        return configRepository.save(
-                new StokvelConfig(CONFIG_ID, contributionAmount, startDate, rotationCount));
+        return configRepository.save(new StokvelConfig(
+                StokvelConfigRepository.SINGLETON_ID, contributionAmount, startDate, rotationCount));
     }
 
     /**
@@ -92,10 +87,15 @@ public class StokvelSetupService {
      * for every rotation in one go orders the rotation A, A, B, B, C, C instead of
      * A, B, C, A, B, C, and correcting that means inserting rows between existing
      * ones. Later rotations are generated whole, when the current one closes.
+     *
+     * The member's created_at comes from the simulated clock (Rule 8), because here
+     * it is business data twice over: it is the rotation order, and compared against
+     * a cycle's due date it is what decides whether a late joiner was liable for the
+     * round already in progress.
      */
     @Transactional
     public MemberAdded addMember(String name) {
-        StokvelConfig config = requireConfig();
+        StokvelConfig config = configRepository.require();
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("A member needs a name.");
         }
@@ -104,7 +104,7 @@ public class StokvelSetupService {
                     "This stokvel is full at " + MAX_MEMBERS + " members — one per month of the year.");
         }
 
-        Member member = memberRepository.save(new Member(name.trim(), simulatedNow(config)));
+        Member member = memberRepository.save(new Member(name.trim(), config.simulatedNow()));
         Cycle cycle = cycleRepository.save(appendCycleFor(member, config));
         return new MemberAdded(member, cycle);
     }
@@ -130,24 +130,8 @@ public class StokvelSetupService {
         return new Cycle(sequenceNumber, rotationNumber, dueDate, recipient);
     }
 
-    /**
-     * The member's creation instant comes from the simulated clock, never from
-     * Instant.now(). created_at is business data here: it decides rotation order,
-     * and compared against a cycle's due date it decides whether a late joiner was
-     * liable for the round already in progress. A wall-clock timestamp would make
-     * those answers depend on the day the demo happens to be run.
-     */
-    private Instant simulatedNow(StokvelConfig config) {
-        return config.getCurrentDate().atStartOfDay(ZoneOffset.UTC).toInstant();
-    }
-
     /** Cycle boundaries are end of month (Rule 8). */
     private static LocalDate endOfMonth(LocalDate date) {
         return date.with(TemporalAdjusters.lastDayOfMonth());
-    }
-
-    private StokvelConfig requireConfig() {
-        return configRepository.findById(CONFIG_ID).orElseThrow(() -> new IllegalStateException(
-                "No stokvel exists yet. Create it before adding members."));
     }
 }

@@ -10,5 +10,14 @@ public interface DebtRepository extends JpaRepository<Debt, Long> {
 
     List<Debt> findAllByOrderByCreatedAtAsc();
 
-    List<Debt> findAllByDebtorOrderByCreatedAtAsc(Member debtor);
+    /**
+     * One member's debts, oldest first — the order Rule 7 settles them in.
+     *
+     * The id tie-break is load-bearing, for the same reason it is on the member
+     * query: created_at comes from the simulated clock, so every debt written by
+     * one payout shares a timestamp to the day. Without the tie-break, "oldest
+     * first" would be whatever order SQLite happened to return, and a member's
+     * settlement history would not be reproducible.
+     */
+    List<Debt> findAllByDebtorOrderByCreatedAtAscIdAsc(Member debtor);
 }

@@ -430,6 +430,19 @@ Test-driven for the service layer. Not for transport.
 
 **Do not TDD:** controllers, STOMP plumbing, DTO mapping. Write them, smoke-test by hand.
 
+**Test infrastructure.** The suite runs against SQLite **in memory**
+(`src/test/resources/application.properties`) — same driver, same community dialect,
+same `date_class=text`, so it exercises the real storage behaviour but cannot inherit
+state from a demo run or leave any behind. `@DataJpaTest` in Boot 4 does not run
+`schema.sql` on its own, so the test classes load it with
+`@Sql(scripts = "/schema.sql", executionPhase = BEFORE_TEST_CLASS)` and
+`@AutoConfigureTestDatabase(replace = NONE)`. Services are pulled in with `@Import`,
+not component scanning, so each test names exactly what it depends on.
+
+**Outstanding:** Rule 7 allocation tests (debts settle oldest first, partial
+settlement, the debt row never decremented, deduction capped at what is owed) and a
+`@WebMvcTest` smoke test for `PaymentController` and the exception advice.
+
 **Why the suite is deterministic:** business logic never reads system time (Rule 8), so
 the clock is injected state, not ambient state. No `Thread.sleep`, no mocking of
 `LocalDate.now()`, no flaky time-dependent tests. Set `current_date`, call the method,
@@ -440,55 +453,56 @@ saying out loud.
 
 ## Build order
 
-1. **Spine, end to end, ugly:** create members + config → record payments → allocations
-   to the current cycle's pot → clock advance → payout fires on due date → ledger view
-2. Debt tracking and display (Rule 2, Rule 6 deduction)
-3. Rule 7 debt-first allocation
-4. Buy-in redistribution
-5. Polish — legible from the back of the room
+**Revised mid-build, deliberately.** The original order built the spine end to end
+first — payments, clock, payout, ledger — and layered the debt rules on afterwards.
+It now goes service by service, each one finished (rules, controller, DTOs, tests)
+before the next is started. The reasoning is what this build is judged on, so a
+service left half-specified while attention moves elsewhere is the expensive kind
+of shortcut: the rule that was deferred is exactly the rule nobody can explain
+later.
 
-If buy-in does not make the build, it is presented as a specified-and-scoped rule.
+The cost of the change, paid knowingly: Rule 7 needs to know what a member owes, so
+finishing `PaymentService` pulled the **read-only half of `ArrearsService`** forward
+ahead of the service that writes debt rows. Rule 7 was therefore first tested
+against debt rows written directly by a test rather than produced by a payout.
 
-### Service-by-service order within the spine
+1. **`StokvelSetupService`** — done. Config, members, and the one cycle each member
+   brings with them.
+2. **`PaymentService`** — done. Rule 7 debt-first allocation, the arrears-deduction
+   entry point Rule 6 calls, `PaymentController`, request/response DTOs, and the
+   `@RestControllerAdvice` that maps refusals to 400/409. Service tests cover v1
+   allocation; **Rule 7 and controller tests are still outstanding.**
+   `ArrearsService`'s read half landed here with it.
+3. **`PayoutService` + `ArrearsService`** — built as one step, because Rule 2's debt
+   rows and the "who is behind" comparison are two halves of the same question.
+   Includes Rule 6's deduction (which calls `PaymentService.recordArrearsDeduction`)
+   and rotation continuation (Rule 9).
+4. **`ClockService`** — Rule 8. `advanceClock` moves the date, `checkDue` walks
+   `findDueCycles()` oldest first and delegates each to `PayoutService`.
+5. **`LedgerService`**, the union query, and `LedgerBroadcaster` — the STOMP push
+   that every mutating service calls at the end.
+6. **Buy-in** (Rule 4). If it does not make the build, it is presented as a
+   specified-and-scoped rule.
+7. **Polish** — legible from the back of the room.
 
-The phase list above is the shape of the build; this is the actual sequence, chosen
-so each service only ever depends on ones already written — no service is started
-before the thing it calls exists.
+**Dependency direction, one way, no cycles:**
+`ClockService → PayoutService → PaymentService → ArrearsService`, all over the
+repositories. `ArrearsService` only reads. Nothing points back up. A cycle would not
+merely upset Spring's constructor injection — it would mean "where does money land"
+had two owners.
 
-1. **`StokvelSetupService`** — `createStokvel()`, `addMember()`. No dependencies but
-   the repositories. `addMember()` writes the member and its one cycle in the same
-   call, which is what keeps Rule 9 an invariant rather than a step someone can skip.
-2. **`PaymentService` v1** — `findOpenCycle()`, write the payment, one allocation to
-   the cycle's pot. No debt logic yet — that is Rule 7, deferred to step 7.
-3. **`PayoutService` v1** — pot via `sumByCycleId`, write the payout row at gross.
-   No arrears deduction yet — that is Rule 6, deferred to step 6.
-4. **`ClockService`** — `advanceClock()` moves `current_date`, `checkDue()` walks
-   `findDueCycles()` in order and fires each through `PayoutService`. Depends on
-   `PayoutService` existing; nothing depends on `ClockService` in turn, so it is
-   safe to build once step 3 is done. Steps 2–4 close the spine.
-5. **`ArrearsService`** — the derived debt queries. Built before steps 6–7 rather
-   than after, because both of them need it.
-6. **`PayoutService` v2** — Rule 2 debt rows for the shortfall, Rule 6 auto-deduction
-   payment. This is also where rotation continuation lives (see below), since both
-   are consequences of one payout firing, not of the clock moving.
-7. **`PaymentService` v2** — Rule 7 debt-first allocation.
-8. **`LedgerService`**, DTOs, `LedgerBroadcaster`, then the remaining controllers,
-   then buy-in.
+**Rotation continuation still belongs in `PayoutService`, not `ClockService`.**
+Whether a cycle was the last in its rotation is only knowable once its payout has
+fired — the same shape of fact as the debt rows Rule 2 writes there. `ClockService`
+stays as thin as Rule 8 requires: it discovers due cycles and delegates, and never
+needs to know rotations exist.
 
-**Rotation continuation belongs in `PayoutService`, not `ClockService`.** Whether a
-cycle was the last one in its rotation is only knowable once its payout has actually
-fired — it is a consequence of that specific payout, the same shape of fact as the
-debt rows Rule 2 writes there. `ClockService` stays exactly as thin as Rule 8 requires:
-it discovers due cycles and delegates, and never needs to know rotations exist.
-
-This also has to happen inline, inside the same call that fires the payout, not
-queued for later. `findDueCycles()` only returns cycles that already exist in the
-table at the moment it runs (see the repository conventions above on why its
-ordering is load-bearing). If a clock advance makes several cycles due in one call
-and the last one closes a rotation, the next rotation's cycles do not exist yet when
-`findDueCycles()` ran — so if that same clock advance was large enough to also make
-one of *those* cycles due, the only place that can be caught is inside the payout
-call that closes the previous rotation, generating the next rotation there and then.
+It also has to happen inline, inside the call that fires the payout, not queued for
+later. `findDueCycles()` only returns cycles that existed when it ran. If one clock
+advance makes several cycles due and the last closes a rotation, the next rotation's
+cycles did not exist yet at that moment — so if the same advance was large enough to
+make one of *those* due, the only place to catch it is inside the payout call that
+closed the previous rotation.
 
 ## Out of scope
 
@@ -511,11 +525,32 @@ singleton row. No custom queries.
 (version from the Boot BOM) added. Dialect is
 `org.hibernate.community.dialect.SQLiteDialect`.
 
-**"Who is behind" has no repository method yet.** The JPQL is known —
-`SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?` — but the spec
-describes it as a *comparison* (expected vs actual, per member per cycle), and whether
-`ArrearsService` wants one member, every member for a cycle, or a DTO with both sides
-changes the signature. Write it when `ArrearsService` says which.
+**~~"Who is behind" has no repository method yet~~ — half settled.** `ArrearsService`
+now has the read side it was waiting on: `outstandingFor(member)` returns that
+member's unsettled debts oldest first with the outstanding amount on each, and
+`totalOutstandingFor(member)` sums them — both derived, nothing stored, fully settled
+debts dropped rather than returned as zero. What is still open is the *comparison*
+the spec describes (expected vs actual, per member per cycle), which needs
+`SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?`. It waits for
+`PayoutService`, which is the caller that will say whether it wants one member, every
+member for a cycle, or a DTO with both sides.
+
+**One payment, many allocations — never many payments.** A payment is the fact that
+money arrived: one event, one amount, the figure actually handed over. Splitting a
+R500 payment into a R200 and a R300 payment to make the allocation code simpler would
+record two events that never happened. The schema agrees: `payment.payout_id` is
+UNIQUE, so one payout can only ever carry one deduction payment.
+
+**`recordArrearsDeduction` is a second entry point, not a flag on `recordPayment`.**
+The two differ in ways that are not parameters: the deduction sets `payout_id`, and
+it must never push a remainder into the pot — it is capped at what is owed, and says
+so by refusing if anything is left over. They share the part that is genuinely the
+same, the private `settleDebts` loop, so Rule 7 has exactly one implementation.
+
+**`recordPayment` no longer refuses outright when the rotation has closed.** It
+refuses only when there is no open cycle *and* the member owes nothing. Someone
+settling arrears after the last payout is making a perfectly good payment; there is
+just nowhere to pot the excess, so excess is what gets refused.
 
 **~~JPQL in `@Query` unverified~~ — partially settled.** The app boots clean against
 SQLite with all repositories loaded, and Hibernate parses every `@Query` at startup, so

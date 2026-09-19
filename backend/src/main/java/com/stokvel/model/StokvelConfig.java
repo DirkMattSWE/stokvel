@@ -6,7 +6,9 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 
 /**
  * Singleton row (id = 1). No foreign keys in or out.
@@ -69,5 +71,23 @@ public class StokvelConfig {
      */
     public void setCurrentDate(LocalDate currentDate) {
         this.currentDate = currentDate;
+    }
+
+    /**
+     * The simulated clock as an instant, for stamping created_at on the rows the
+     * rules write — members, payments, debts, payouts. Business logic never calls
+     * Instant.now() (Rule 8), so this is the only source those timestamps have.
+     *
+     * It lives on the entity rather than in each service because it is a fact about
+     * this column, not about any one caller: a service that reached for the wall
+     * clock instead would make rotation order and debt settlement order depend on
+     * the day the demo happens to be run.
+     *
+     * UTC, not the system zone, for the same reason date_class=text is on the JDBC
+     * URL — a local-midnight conversion is how a stored date silently becomes the
+     * day before somewhere else.
+     */
+    public Instant simulatedNow() {
+        return currentDate.atStartOfDay(ZoneOffset.UTC).toInstant();
     }
 }
