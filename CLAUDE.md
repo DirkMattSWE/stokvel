@@ -529,9 +529,87 @@ edge cases are part of the design rather than a check on it.
    than discovered later: whether a member added *on* a cycle's due date was liable
    for it (Rule 3's boundary); what happens when the **recipient** underpays their
    own cycle, since `CHECK (debtor_id <> creditor_id)` forbids owing yourself and
-   their shortfall simply makes their own pot smaller; and the ordering requirement
-   that this cycle's debt rows are written **before** the recipient's arrears are
-   totalled, or Rule 6 deducts a stale number.
+   their shortfall simply makes their own pot smaller; and where the ordering
+   requirement between debt rows and the arrears total actually lives — see below.
+
+   **Corrected 2026-09-20.** This previously read "this cycle's debt rows are written
+   *before* the recipient's arrears are totalled, or Rule 6 deducts a stale number,"
+   as though the constraint were between two steps of one payout. It is not, and the
+   distinction is worth stating precisely because it is the obvious thing to be asked.
+
+   Within a single payout the two steps cannot interfere. The debt rows this cycle
+   writes all name **this cycle's recipient as creditor**, and
+   `CHECK (debtor_id <> creditor_id)` means the recipient can never appear as debtor
+   among them. Totalling the recipient's own arrears reads rows where they are
+   *debtor* — every one of which was written by an *earlier* cycle's payout. The two
+   sets are disjoint, so the step order inside `firePayout` changes nothing.
+
+   The constraint is real **across** payouts. Advance the clock three months and
+   cycles 5, 6 and 7 all fire: cycle 5's payout writes "Alice owes Bob R500", and if
+   Alice is cycle 6's recipient her deduction must include it. What guarantees that
+   is `findDueCycles()` returning an ordered `List` and each payout running to
+   completion before the next begins — the same argument already made under
+   *Repository conventions*, not anything about statement order within the method.
+
+   Keep the debt rows before the arrears total anyway. It costs nothing, it is the
+   order the rules read in, and it stays correct if a later rule ever does let the
+   two sets overlap. It is belt-and-braces, not the mechanism.
+
+   **Where pass 3 stands, end of 2026-09-20.** The shell is written and compiles;
+   no method exists yet. Four things were settled in the design conversation and are
+   recorded here so 3a can start cold tomorrow morning.
+
+   **`firePayout(Cycle cycle)` takes one parameter, and that is the whole signature.**
+   Everything else is reachable from it or derived: the recipient is
+   `cycle.getRecipient()` (fixed at creation, Rule 5), the pot is
+   `sumByCycleId(cycle.getId())`, what each member owed is `contribution_amount`, who
+   was liable is the member list compared against `cycle.getDueDate()`, and what the
+   recipient owes is `debt` minus `allocation`. A parameter is a place a caller can
+   lie: `firePayout(cycle, potAmount)` would let someone pass a pot that disagrees
+   with the allocations, and `firePayout(cycle, recipient)` would let someone pay the
+   wrong member. One parameter means there is exactly one thing to get wrong, and it
+   is the thing `findDueCycles()` handed over.
+
+   It takes the entity rather than an id, unlike `PaymentService.recordPayment(Long
+   memberId, …)`. That one is called from an HTTP request, where the id is untrusted
+   and has to be looked up. This one is called service-to-service by `ClockService`,
+   which already holds the loaded row.
+
+   **Rule 1 is implemented as the absence of a date check.** `firePayout` never asks
+   whether the cycle is due — that was decided upstream by `findDueCycles()`. Asking
+   again would put a second reader of `current_date` in the system (Rule 8) and, worse,
+   give the method a way to decline. "Fires on the due date, regardless" is enforced by
+   there being no branch in which to write the exception.
+
+   **The `max(0, …)` floor is a `min` on the deduction, not a clamp on the payout.**
+   The payout row is always gross. `deduction = min(pot, owed)` makes the net
+   `pot − deduction`, which is `max(0, pot − owed)` with no branch — and it is what
+   makes `recordArrearsDeduction`'s refuse-any-remainder check satisfiable by
+   construction, since the cap can never exceed what is owed.
+
+   **Dependencies are added per pass, not up front.** The shell holds
+   `StokvelConfigRepository`, `MemberRepository`, `AllocationRepository` and
+   `DebtRepository` — exactly what 3a needs. `PayoutRepository`, `PaymentService` and
+   `ArrearsService` arrive with 3b; `CycleRepository` with 3c, which is the first pass
+   that looks a cycle *up* rather than being handed one. An unused field is a claim
+   about what the class does that is not true yet.
+
+   **Three questions to answer first thing in 3a**, in the map-the-method-first order:
+   (1) which boundary decides liability — the cycle's own `due_date` or the previous
+   cycle's — and whether a member added *on* that date is in or out; (2) whether the
+   per-member comparison runs one query per member (matching what
+   `ArrearsService.outstandingFor` already does and already justified, N ≤ 12) or one
+   `GROUP BY payment.member_id` query matched up in Java, and whether it returns bare
+   shortfalls or a DTO carrying **both sides** so the UI can say "Alice paid R300 of
+   R500"; (3) what happens to the recipient's own shortfall, given the `CHECK` refuses
+   the debt row.
+
+   **Debt compounds into debt, and that is intended.** Rule 7 settles old arrears
+   first, so a member owing R500 who pays R500 contributes nothing to the current pot
+   and earns a fresh debt row for the full contribution. It is the "standing risk,
+   deliberately visible" note under Rule 7 arriving in practice, and it is the first
+   thing an audience will point at — so it is written down as a decision rather than
+   discovered as a surprise.
 4. **`ClockService`** — Rule 8. `advanceClock` moves the date, `checkDue` walks
    `findDueCycles()` oldest first and delegates each to `PayoutService`.
 5. **`LedgerService`**, the union query, and `LedgerBroadcaster` — the STOMP push
