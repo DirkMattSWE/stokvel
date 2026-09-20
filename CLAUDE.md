@@ -439,9 +439,30 @@ state from a demo run or leave any behind. `@DataJpaTest` in Boot 4 does not run
 `@AutoConfigureTestDatabase(replace = NONE)`. Services are pulled in with `@Import`,
 not component scanning, so each test names exactly what it depends on.
 
-**Outstanding:** Rule 7 allocation tests (debts settle oldest first, partial
-settlement, the debt row never decremented, deduction capped at what is owed) and a
-`@WebMvcTest` smoke test for `PaymentController` and the exception advice.
+**Rule 7 allocation — done** (`PaymentServiceDebtAllocationTest`, ten tests, commit
+`8441616`). Five on the split itself: pays more than owed, pays less, pays the exact
+amount (the boundary — `remainder` is zero, so no zero-amount pot row is written),
+several debts oldest-first, and the money running out mid-list so the loop breaks
+before reaching the next debt. Five on the invariants underneath it: the debt row is
+never decremented, the pot counts only what survived, a second payment settles
+against what is *left* rather than the original amount, a fully settled debt leaves
+the arrears list, and total arrears is summed fresh on every ask.
+
+**The invariant half is the half that matters.** A happy-path test checks the answer;
+an invariant test checks that the answer is still being *derived* rather than stored.
+Both would show "R200 settled" — only the invariant catches someone doing the
+bookkeeping twice. `settling_a_debt_never_changes_the_debt_row` calls
+`entityManager.flush()` then `.clear()` before re-reading, because `@DataJpaTest`
+wraps each test in a transaction and `findById` would otherwise hand back the
+persistence context's own cached instance. Without that, a test whose entire claim is
+"no UPDATE was ever issued" would pass either way.
+
+**Outstanding:** the three `recordArrearsDeduction` refusals (amount exceeds what is
+owed, nothing owed at all, and the rollback leaving no `payment` or `allocation` rows
+behind), and a `@WebMvcTest` smoke test for `PaymentController` and the exception
+advice. The deduction tests are deliberately **not** in the allocation test class:
+that method has exactly one caller, and testing it through `PayoutService` is more
+honest than testing it against a `Payout` row assembled by hand.
 
 **Why the suite is deterministic:** business logic never reads system time (Rule 8), so
 the clock is injected state, not ambient state. No `Thread.sleep`, no mocking of
@@ -466,17 +487,51 @@ finishing `PaymentService` pulled the **read-only half of `ArrearsService`** for
 ahead of the service that writes debt rows. Rule 7 was therefore first tested
 against debt rows written directly by a test rather than produced by a payout.
 
+### How each pass runs — the author maps the method first
+
+**Revised again on 2026-09-20, at the author's call.** Before any code is written for
+a pass, the author maps out the methods themselves: what each one has to do, in what
+order, and which rule it is serving. Claude's job is then to correct what is wrong and
+explain why, not to hand over a finished implementation for review afterwards.
+
+The reason is the same one that produced the service-by-service order, one step
+further on. Reviewing code you did not design teaches you what it does; designing it
+first and being corrected teaches you why it is that shape — and *why* is what this
+build is judged on. It is also the only version of the loop where a wrong assumption
+surfaces before it has been written down as working code.
+
+So the shape of every pass below is: **the author maps the method → Claude corrects
+and explains → then, and only then, the code.** Tests follow the same order, since the
+edge cases are part of the design rather than a check on it.
+
 1. **`StokvelSetupService`** — done. Config, members, and the one cycle each member
    brings with them.
 2. **`PaymentService`** — done. Rule 7 debt-first allocation, the arrears-deduction
    entry point Rule 6 calls, `PaymentController`, request/response DTOs, and the
    `@RestControllerAdvice` that maps refusals to 400/409. Service tests cover v1
-   allocation; **Rule 7 and controller tests are still outstanding.**
-   `ArrearsService`'s read half landed here with it.
-3. **`PayoutService` + `ArrearsService`** — built as one step, because Rule 2's debt
-   rows and the "who is behind" comparison are two halves of the same question.
-   Includes Rule 6's deduction (which calls `PaymentService.recordArrearsDeduction`)
-   and rotation continuation (Rule 9).
+   allocation and Rule 7 debt-first allocation (commit `8441616`); **only the
+   controller tests are still outstanding.** `ArrearsService`'s read half landed
+   here with it.
+3. **`PayoutService` + `ArrearsService`** — one service, built in **three passes**,
+   each with a design conversation before any code and its own tests after. Rule 2's
+   debt rows and the "who is behind" comparison are still two halves of one question;
+   splitting the *build* is not splitting the *service*.
+   - **3a — Rule 2.** Who was short this cycle, one debt row per non-payer, creditor
+     is the cycle's recipient. This is the pass that finishes `ArrearsService`, since
+     the comparison finally has the real caller that decides its shape.
+   - **3b — Rule 6.** The `payout` row (gross), then the deduction through
+     `PaymentService.recordArrearsDeduction`, and the `max(0, …)` floor. The three
+     outstanding deduction tests land here.
+   - **3c — Rule 9.** Rotation continuation, inline in the call that fires the
+     payout, for the reason given below.
+
+   Three edge cases the rule text does not cover, to be settled in 3a and 3b rather
+   than discovered later: whether a member added *on* a cycle's due date was liable
+   for it (Rule 3's boundary); what happens when the **recipient** underpays their
+   own cycle, since `CHECK (debtor_id <> creditor_id)` forbids owing yourself and
+   their shortfall simply makes their own pot smaller; and the ordering requirement
+   that this cycle's debt rows are written **before** the recipient's arrears are
+   totalled, or Rule 6 deducts a stale number.
 4. **`ClockService`** — Rule 8. `advanceClock` moves the date, `checkDue` walks
    `findDueCycles()` oldest first and delegates each to `PayoutService`.
 5. **`LedgerService`**, the union query, and `LedgerBroadcaster` — the STOMP push
@@ -533,7 +588,8 @@ debts dropped rather than returned as zero. What is still open is the *compariso
 the spec describes (expected vs actual, per member per cycle), which needs
 `SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?`. It waits for
 `PayoutService`, which is the caller that will say whether it wants one member, every
-member for a cycle, or a DTO with both sides.
+member for a cycle, or a DTO with both sides. **Build-order pass 3a is where that gets
+answered** — Rule 2 cannot write a debt row without first asking who was short.
 
 **One payment, many allocations — never many payments.** A payment is the fact that
 money arrived: one event, one amount, the figure actually handed over. Splitting a
