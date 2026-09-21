@@ -457,12 +457,45 @@ wraps each test in a transaction and `findById` would otherwise hand back the
 persistence context's own cached instance. Without that, a test whose entire claim is
 "no UPDATE was ever issued" would pass either way.
 
-**Outstanding:** the three `recordArrearsDeduction` refusals (amount exceeds what is
-owed, nothing owed at all, and the rollback leaving no `payment` or `allocation` rows
-behind), and a `@WebMvcTest` smoke test for `PaymentController` and the exception
-advice. The deduction tests are deliberately **not** in the allocation test class:
-that method has exactly one caller, and testing it through `PayoutService` is more
-honest than testing it against a `Payout` row assembled by hand.
+**Pass 3 — done 2026-09-21**, twenty-three tests across three classes, suite at 43.
+
+`PayoutServiceDebtTest` (Rule 2, eight): three on the answer — paid nothing, part-paid
+versus paid-up, and overpayment producing no negative debt — and five on the
+invariants. The invariant that matters most is
+`a_payment_swallowed_by_older_debt_still_leaves_the_member_short`: R500 handed over
+against R400 of arrears leaves R100 in the pot and a fresh R400 debt row. It fails the
+moment anyone re-derives the comparison from `payment.amount` instead of allocations,
+which is the one "optimisation" that would quietly break Rule 2.
+
+`PayoutServiceArrearsDeductionTest` (Rules 1 and 6, nine): gross row plus separate
+deduction, net derived from the two, the `min(pot, owed)` cap with the recipient
+receiving nothing and staying short, an empty pot still firing a payout for R0, and
+the Rule 6/7 interaction recorded under build-order pass 3.
+
+`PayoutServiceRotationTest` (Rule 9, six): the next rotation generated whole, numbering
+and calendar continuing unbroken, a mid-rotation joiner present in the next rotation,
+the final rotation generating nothing, and three rotations run end to end. Nobody pays
+anything in that class — an empty pot is the cheapest way to walk a rotation, and that
+it works at all is itself the assertion that payouts are not conditional.
+
+**Outstanding:** the third `recordArrearsDeduction` refusal — the rollback leaving no
+`payment` or `allocation` rows behind — and a `@WebMvcTest` smoke test for
+`PaymentController` and the exception advice. The other two refusals (amount exceeds
+what is owed, nothing owed at all) landed in `PayoutServiceArrearsDeductionTest`.
+
+**Why the rollback test is still open, and not from neglect.** `@DataJpaTest` wraps
+each test in a transaction and `recordArrearsDeduction`'s `@Transactional` joins it,
+so a throw marks the transaction rollback-only rather than rolling anything back.
+Asserting "no rows left behind" inside that same transaction would pass without
+testing the claim — the same trap as the `flush()`/`clear()` note above, where a test
+whose entire point is "no write was issued" passes either way. It needs a
+non-transactional harness, so it is a real gap rather than a cheap one.
+
+The deduction tests are deliberately **not** in the allocation test class: that method
+has exactly one caller, and testing it through `PayoutService` is more honest than
+testing it against a `Payout` row assembled by hand. The two refusals are the
+exception — they cannot be reached through `PayoutService` at all, since the
+`min(pot, owed)` cap makes them unreachable by construction, which is the point.
 
 **Why the suite is deterministic:** business logic never reads system time (Rule 8), so
 the clock is injected state, not ambient state. No `Thread.sleep`, no mocking of
@@ -512,10 +545,10 @@ edge cases are part of the design rather than a check on it.
    allocation and Rule 7 debt-first allocation (commit `8441616`); **only the
    controller tests are still outstanding.** `ArrearsService`'s read half landed
    here with it.
-3. **`PayoutService` + `ArrearsService`** — one service, built in **three passes**,
-   each with a design conversation before any code and its own tests after. Rule 2's
-   debt rows and the "who is behind" comparison are still two halves of one question;
-   splitting the *build* is not splitting the *service*.
+3. **`PayoutService` + `ArrearsService`** — **done 2026-09-21.** One service, built
+   in **three passes**, each with a design conversation before any code and its own
+   tests after. Rule 2's debt rows and the "who is behind" comparison are still two
+   halves of one question; splitting the *build* was not splitting the *service*.
    - **3a — Rule 2.** Who was short this cycle, one debt row per non-payer, creditor
      is the cycle's recipient. This is the pass that finishes `ArrearsService`, since
      the comparison finally has the real caller that decides its shape.
@@ -555,7 +588,31 @@ edge cases are part of the design rather than a check on it.
    order the rules read in, and it stays correct if a later rule ever does let the
    two sets overlap. It is belt-and-braces, not the mechanism.
 
-   **Where pass 3 stands, end of 2026-09-20.** The shell is written and compiles;
+   **Pass 3 is done — 2026-09-21.** All three sub-passes built and tested; suite at
+   43 green. `firePayout(Cycle)` runs `recordShortfallsAsDebt` → `payRecipient` →
+   `continueRotation` and returns the `Payout`. Three things were learned building it
+   that the design conversation did not predict:
+
+   **The comparison went to `ArrearsService`, not `PayoutService`** — see the
+   dependency correction above.
+
+   **Rules 6 and 7 interact in a way that looks like a bug and is not.** A member who
+   contributes during their *own* cycle while carrying arrears has that contribution
+   swallowed by Rule 7 before the payout ever runs. There is then nothing to deduct,
+   no deduction payment row, and their own pot is short by exactly what they paid —
+   and they take no debt row for that shortfall, because it is their own cycle. The
+   money reaches the same place by either route; what differs is which ledger line it
+   appears on, which is the difference between paying a debt and having it taken off
+   you. Covered by `arrears_cleared_before_the_payout_leave_nothing_to_deduct`.
+
+   **`ClockService.checkDue` must re-query, not iterate a snapshot.** A payout that
+   closes a rotation generates cycles that did not exist when `findDueCycles()` ran,
+   and a large enough clock advance can make some of *those* due immediately. So
+   `checkDue` loops `while (findDueCycles() is not empty) firePayout(first)` rather
+   than a for-each over one result. This is the other half of why `continueRotation`
+   has to run inline — the rows must be committed before the next query.
+
+   **Original note, kept for the reasoning.** The shell is written and compiles;
    no method exists yet. Four things were settled in the design conversation and are
    recorded here so 3a can start cold tomorrow morning.
 
@@ -587,12 +644,24 @@ edge cases are part of the design rather than a check on it.
    makes `recordArrearsDeduction`'s refuse-any-remainder check satisfiable by
    construction, since the cap can never exceed what is owed.
 
-   **Dependencies are added per pass, not up front.** The shell holds
-   `StokvelConfigRepository`, `MemberRepository`, `AllocationRepository` and
-   `DebtRepository` — exactly what 3a needs. `PayoutRepository`, `PaymentService` and
-   `ArrearsService` arrive with 3b; `CycleRepository` with 3c, which is the first pass
+   **Dependencies are added per pass, not up front.** `PayoutRepository` and
+   `PaymentService` arrive with 3b; `CycleRepository` with 3c, which is the first pass
    that looks a cycle *up* rather than being handed one. An unused field is a claim
    about what the class does that is not true yet.
+
+   **Corrected 2026-09-21, once 3a was actually built.** The shell was scaffolded with
+   `StokvelConfigRepository`, `MemberRepository`, `AllocationRepository` and
+   `DebtRepository`, on the assumption that `PayoutService` would run the who-was-short
+   loop itself. It does not. The comparison went to `ArrearsService.shortfallsFor(cycle)`
+   instead, so `MemberRepository` and `AllocationRepository` moved *there* and
+   `ArrearsService` arrived in 3a rather than 3b. `PayoutService` now holds
+   `StokvelConfigRepository`, `DebtRepository` and `ArrearsService`.
+
+   The reason the comparison belongs on the read side: `PayoutService` writes, and
+   `ArrearsService` never does. Had the loop stayed in `PayoutService`, the only way to
+   ask "who is behind on cycle 5" would have been to call the service that fires
+   payouts. The cost, paid knowingly, is that `ArrearsService` now reads config and
+   members as well as debts — it is no longer purely a debt reader.
 
    **Three questions to answer first thing in 3a**, in the map-the-method-first order:
    (1) which boundary decides liability — the cycle's own `due_date` or the previous
@@ -612,6 +681,13 @@ edge cases are part of the design rather than a check on it.
    discovered as a surprise.
 4. **`ClockService`** — Rule 8. `advanceClock` moves the date, `checkDue` walks
    `findDueCycles()` oldest first and delegates each to `PayoutService`.
+
+   **`checkDue` re-queries; it does not iterate one snapshot.** A payout that closes a
+   rotation writes cycles that did not exist when `findDueCycles()` ran, and a large
+   enough advance makes some of those due immediately. The loop is
+   `while (findDueCycles() is not empty) firePayout(the first)`. A for-each over a
+   single result silently skips them. Proven by `PayoutServiceRotationTest`, whose
+   `runRotationToItsEnd()` fixture is that same loop.
 5. **`LedgerService`**, the union query, and `LedgerBroadcaster` — the STOMP push
    that every mutating service calls at the end.
 6. **Buy-in** (Rule 4). If it does not make the build, it is presented as a
@@ -668,6 +744,55 @@ the spec describes (expected vs actual, per member per cycle), which needs
 `PayoutService`, which is the caller that will say whether it wants one member, every
 member for a cycle, or a DTO with both sides. **Build-order pass 3a is where that gets
 answered** — Rule 2 cannot write a debt row without first asking who was short.
+
+**Overpayment is refused — decided 2026-09-21, not yet implemented.** There was no
+rule for a member paying more than they owe, and the current behaviour is that the
+whole excess lands in the open cycle's pot: R700 against a R500 contribution makes
+that month's recipient R200 better off, and the payer still owes R500 next month.
+
+The author's call is that `recordPayment` should refuse instead. A member can pay at
+most **outstanding arrears + what is left of this cycle's contribution**, and anything
+above that is rejected rather than potted.
+
+Refuse, not silently cap. A `payment` row is the fact that money arrived; writing a
+row for less than was handed over would put a number in the ledger that never
+happened. This matches `recordArrearsDeduction`, which already refuses a remainder
+rather than trimming one.
+
+The system still has no concept of credit anywhere — consistent with Rule 4, where
+buy-in top-ups distribute immediately and are explicitly "not accrued as credit."
+Spill-forward would need allocations against cycles that have not opened yet, which
+`findOpenCycle()` cannot express: it returns the *earliest* unpaid cycle, by
+definition.
+
+**Lands in `PaymentService`, and it will change an existing test.**
+`PayoutServiceDebtTest.overpaying_writes_no_row_and_no_negative_debt` currently pays
+R700 to prove the shortfall floor holds — under the new rule that payment is refused,
+so the test needs a different way to produce a `paid > expected` comparison, or the
+floor gets asserted at the record level instead. The floor in `CycleShortfall` stays
+either way: it is cheap, and it is the kind of guard that should not depend on another
+service continuing to refuse things.
+
+**Buy-in scope — the author wants to revisit this, raised 2026-09-21.** Rule 4 as
+written compensates *already-paid* members for the gap between the pot they received
+and the longer rotation they now contribute to. The author's position is that it should
+also cover **the cycle in progress at the moment of joining**, on the grounds that its
+recipient is in the same position as the already-paid members: they will receive a pot
+sized for the old member count and then contribute to a longer rotation.
+
+That argument holds. The affected set is more accurately *"every member whose own pot
+is smaller than the rotation they pay into"* than *"already-paid members"* — and stated
+that way it does include the current cycle's recipient.
+
+What must not change with it: **buy-in money never enters a pot.** Compensating the
+current recipient through `buyin_distribution` is fine. Making the joiner *contribute
+to* the in-progress cycle is not — that inflates a pot above the rotation it belongs
+to and hands its recipient a bonus for the timing of someone else's arrival. The two
+sound alike in conversation and are structurally different. Rule 3 stays either way:
+re-confirmed 2026-09-21, and it costs no code.
+
+Deferred because buy-in is build-order item 6, the designated casualty if the build
+runs short. Decide it when that pass starts.
 
 **One payment, many allocations — never many payments.** A payment is the fact that
 money arrived: one event, one amount, the figure actually handed over. Splitting a
