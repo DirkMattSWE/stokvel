@@ -478,6 +478,42 @@ the final rotation generating nothing, and three rotations run end to end. Nobod
 anything in that class — an empty pot is the cheapest way to walk a rotation, and that
 it works at all is itself the assertion that payouts are not conditional.
 
+**Passes 4 and 5 — done 2026-09-21**, eighteen tests, suite at **61**.
+
+`ClockServiceTest` (Rules 1, 8, 9, nine): the date is stored and read back after a
+flush/clear, a backwards move is refused and leaves the clock where it was, a date
+short of the due date fires nothing, the due date itself fires for R0, a multi-month
+jump fires every cycle it passed oldest first, a paid-out cycle never fires again,
+and the two Rule 6 shapes — a payout carrying its deduction, and one carrying none.
+
+The one that matters is
+`a_jump_that_closes_a_rotation_also_fires_the_new_rotations_due_cycles`. Three
+members, two rotations, one jump to 30 June: **five** payouts, because rotation 2 was
+written inline during the loop by the payout that closed rotation 1. A for-each over
+one `findDueCycles()` result returns three and leaves the clock in June with two
+payouts that silently never happened — no error, no missing column, just a ledger
+short of two entries.
+
+The whole class is created in **2020**, deliberately. An assertion that passes
+because the real calendar happens to agree is not testing Rule 8.
+
+`LedgerServiceTest` (nine): an empty ledger is not an error state, a payment is one
+line with its allocations underneath, a Rule 7 split is still one line with two
+slices, a debt line names both sides, a payout and its deduction are two lines rather
+than one net figure, a voluntary payment that settles a debt is not a DEDUCTION
+(`payout_id` is what tells them apart, never timing), and same-day lines come back in
+causal order.
+
+Every test writes its rows through the ordinary services rather than assembling them
+by hand — a ledger built from hand-made rows proves only that the mapping compiles.
+`the_ledger_is_derived_fresh_on_every_call` is the invariant half: it fails the moment
+anyone caches a total.
+
+`within_one_simulated_day_the_order_is_causal_not_the_order_of_arrival` is a test of a
+**limitation**, not a feature. It was written because the first attempt at the
+same-day ordering test asserted arrival order and failed — correctly. Writing the
+limitation down as an assertion is what stops it being discovered during the demo.
+
 **Outstanding:** the third `recordArrearsDeduction` refusal — the rollback leaving no
 `payment` or `allocation` rows behind — and a `@WebMvcTest` smoke test for
 `PaymentController` and the exception advice. The other two refusals (amount exceeds
@@ -679,17 +715,111 @@ edge cases are part of the design rather than a check on it.
    deliberately visible" note under Rule 7 arriving in practice, and it is the first
    thing an audience will point at — so it is written down as a decision rather than
    discovered as a surprise.
-4. **`ClockService`** — Rule 8. `advanceClock` moves the date, `checkDue` walks
-   `findDueCycles()` oldest first and delegates each to `PayoutService`.
+4. **`ClockService`** — **done 2026-09-21**, commit `1b931a1`, nine tests.
+   `advanceClock(LocalDate target)` refuses a backwards move, writes `current_date`,
+   then `checkDue()` fires what that made due. One transaction for the whole advance:
+   the clock moving and the payouts it caused are one event, and a date that moved
+   past payouts which never fired is the worst of the available outcomes.
 
    **`checkDue` re-queries; it does not iterate one snapshot.** A payout that closes a
    rotation writes cycles that did not exist when `findDueCycles()` ran, and a large
    enough advance makes some of those due immediately. The loop is
    `while (findDueCycles() is not empty) firePayout(the first)`. A for-each over a
-   single result silently skips them. Proven by `PayoutServiceRotationTest`, whose
-   `runRotationToItsEnd()` fixture is that same loop.
-5. **`LedgerService`**, the union query, and `LedgerBroadcaster` — the STOMP push
-   that every mutating service calls at the end.
+   single result silently skips them. Asserted by
+   `ClockServiceTest.a_jump_that_closes_a_rotation_also_fires_the_new_rotations_due_cycles`:
+   three members, two rotations, one jump to 30 June gives **five** payouts, not
+   three. It is the only test in the suite that fails if anyone flattens that loop.
+
+   **A target date, not a month count.** The cycle rows already carry their due
+   dates, so `ClockService` does no calendar arithmetic — a second place that knew
+   where a month ends would be a second place to get it wrong. The month-by-month
+   alternative was considered and rejected: an internal loop still runs to completion
+   inside one HTTP request, so it creates no pause for anyone to pay. The rhythm of
+   "pay, advance, pay, advance" is demo discipline enforced by the UI, not by the
+   service.
+
+   **Multi-month jumps are supported deliberately.** Skipping three months loses
+   nobody's money — it writes debt rows, and Rule 7 lets one later payment walk
+   backwards through every month missed. In production the same shape is just the app
+   having been down.
+
+   *Accepted cost:* `created_at` comes from the simulated clock, so a multi-month
+   jump stamps every row it writes with the target date, and January's debts read as
+   dated March. Settlement order is unaffected (`created_at`, then `id`, which is
+   monotonic), and advancing a month at a time never reaches it.
+
+   **`firePayout` returns `PayoutService.PayoutOutcome(Payout, RecordedPayment)`,
+   not a bare `Payout`** — the author's correction, and it was right.
+   `recordArrearsDeduction` already hands `payRecipient` the `RecordedPayment`, and
+   `payRecipient` was discarding it, so the caller had to re-read a row written three
+   lines earlier to show a net figure. Keeping it drops two repository dependencies
+   and a private lookup from `ClockService`, which now knows only about dates and
+   cycles. `netReceived()` and `deducted()` live on the record, derived. Named
+   `PayoutOutcome` rather than `FiredPayout` because `firePayout`/`FiredPayout`
+   differ by one letter and are unreadable aloud.
+
+   **The clock's tests are created in 2020 on purpose.** An assertion that passes
+   because the real calendar happens to agree is not testing Rule 8 at all.
+5. **`LedgerService`, `LedgerBroadcaster`, `LedgerController`** — **done 2026-09-21**,
+   commit `129717d`, nine tests, suite at 61.
+
+   **Three queries for the lines, one for the slices, merged and sorted in Java** —
+   not one SQL `UNION`. JPQL has no `UNION` across unrelated entities, and a native
+   one hands back untyped columns to map by hand, which would be a second place
+   deciding what a row means. Allocations are fetched once and grouped by payment id;
+   per-payment lookups would be N+1 by construction, since the ledger renders every
+   payment there has ever been.
+
+   **An `allocation` is a slice, not a line.** It has no `created_at`, so it can only
+   borrow its payment's and could never sort anywhere except beside it. A row that
+   cannot move independently is detail of an event, not an event. `buyin` /
+   `buyin_distribution` is the same shape again — which is the point: the ledger's
+   structure is the schema's, read back, not a new one imposed on it.
+
+   **`EntryType` carries a rank, and it is load-bearing.** Every row written on one
+   simulated day has a byte-identical `created_at`, because the clock is a date and
+   `simulatedNow()` is its midnight. Sorting on the timestamp alone would leave a
+   payout and its deduction in whichever order the merge produced. The rank is the
+   causal order: `PAYMENT 0 → DEBT 1 → PAYOUT 2 → DEDUCTION 3`. Timestamp groups by
+   day, rank orders within the day, and a stable sort over id-ordered queries settles
+   two rows sharing both.
+
+   **Within one simulated day the order is causal, not arrival order — decided, not
+   overlooked.** A member who pays *after* that day's payout has already fired is
+   still listed before it. Asserted by
+   `within_one_simulated_day_the_order_is_causal_not_the_order_of_arrival` rather than
+   left to be discovered on stage.
+
+   The alternatives were weighed. Real time-of-day in `created_at` is refused
+   outright: `debt.created_at` drives Rule 7's oldest-first settlement, so wall-clock
+   time there would make business logic read system time (Rule 8), make `created_at`
+   irreproducible between runs, and make the suite flaky — the exact three properties
+   the design is built to have. A monotonic sequence column would work and stays
+   deterministic, but costs a schema change and a new constructor argument on four
+   tables to fix a case the demo flow (pay, then advance) never reaches. Causal order
+   is also the better ledger: grouping a payout with the deduction that came out of it
+   is how Rule 6 is explained.
+
+   **`LedgerEntry` crosses the wire as itself — there is no `LedgerResponse`.** It
+   carries no JPA entities, only strings, amounts and an instant, so it is already the
+   wire shape and a copy under another name would be ceremony. The DTO rule exists to
+   stop *entities* being serialised (`Debt` has two foreign keys back to `Member`, and
+   Jackson follows them forever); there are none here.
+
+   **Only the outermost mutating methods broadcast** — `recordPayment` and
+   `advanceClock`. `recordArrearsDeduction` and `firePayout` are always reached from
+   inside another service's transaction, so a push from there would send clients a
+   half-finished picture (debts written, no payout yet) and replace it a moment later.
+   `addMember` does not broadcast either: it writes no ledger row, and claiming
+   otherwise would be a push that says nothing changed. One push per user action.
+
+   **The whole ledger is pushed, not a delta** — the server owns state and clients
+   re-render from it, so there is no client-side merge to write and no way to drift.
+
+   **`GET /api/ledger` exists for the initial load only**, before the socket has
+   pushed anything. There is no `POST`, and there never will be: a way to write a line
+   directly would be the second source of truth that not having a ledger table
+   prevents.
 6. **Buy-in** (Rule 4). If it does not make the build, it is presented as a
    specified-and-scoped rule.
 7. **Polish** — legible from the back of the room.
@@ -793,6 +923,21 @@ re-confirmed 2026-09-21, and it costs no code.
 
 Deferred because buy-in is build-order item 6, the designated casualty if the build
 runs short. Decide it when that pass starts.
+
+**Two read endpoints the frontend needs do not exist yet — noticed 2026-09-21.**
+Every endpoint but three is a `POST`. There is no way to **list** members, so the
+member dropdown has nothing to populate from, and no way to read the cycles, so
+nothing tells the UI whose turn it is, what the pot holds or when it falls due.
+`CycleRepository.findAllWithRecipient()` already exists and is unused.
+
+Both are methods on controllers that already exist — `GET /api/setup/members` and a
+`GET /api/cycles` beside the shortfalls endpoint. **Five controllers is final.** Pure
+mapping, no rules, so this is the mechanical work a low-effort model does.
+
+**Cycle and rotation state is deliberately not on the ledger.** The ledger answers
+*what happened, in order?*; whose turn it is and what the pot holds is *what is the
+state right now?*. Two questions, two endpoints. Folding state into the ledger would
+make it the object every screen reads and every change has to touch.
 
 **One payment, many allocations — never many payments.** A payment is the fact that
 money arrived: one event, one amount, the figure actually handed over. Splitting a
