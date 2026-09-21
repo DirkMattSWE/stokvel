@@ -49,7 +49,11 @@ class PaymentServiceDebtAllocationTest {
     private static final LocalDate START = LocalDate.of(2026, 1, 15);
     private static final BigDecimal CONTRIBUTION = new BigDecimal("500.00");
 
-    /** Cycle 1 and cycle 2's due dates — when a debt from each would have been written. */
+    /**
+     * Two timestamps a month apart, for stamping debt rows in a known order — Rule 7
+     * settles oldest first, so only their order matters here, not the dates
+     * themselves.
+     */
     private static final LocalDate JANUARY = LocalDate.of(2026, 1, 31);
     private static final LocalDate FEBRUARY = LocalDate.of(2026, 2, 28);
 
@@ -76,8 +80,12 @@ class PaymentServiceDebtAllocationTest {
     private Member thabo;
 
     /**
-     * Three members, so three cycles: 1 pays John (31 Jan), 2 pays Sarah (28 Feb),
-     * 3 pays Thabo (31 Mar). One rotation.
+     * Three members, so three cycles: 1 pays John (28 Feb), 2 pays Sarah (31 Mar),
+     * 3 pays Thabo (30 Apr). One rotation.
+     *
+     * The stokvel is created on 15 Jan but its first cycle is due at the end of
+     * February, not January — a stokvel starts on the first of the month after it is
+     * created, so no cycle is ever shorter than a full month.
      */
     @BeforeEach
     void createStokvelWithThreeMembers() {

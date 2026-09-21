@@ -117,6 +117,20 @@ public class StokvelSetupService {
      * The due date chains off the tail cycle rather than off config.current_date,
      * because current_date moves as the clock advances (Rule 8) — a member joining
      * in month three would otherwise be handed a due date computed from month three.
+     *
+     * The very first cycle is due at the end of the month *after* creation, so the
+     * stokvel effectively starts on the first of the next month. End of the creation
+     * month would give a stokvel created on the 31st a cycle that falls due the same
+     * day: it fires on the first clock check, before anyone could possibly have paid,
+     * so every member takes a debt row and the first recipient gets nothing. Pushing
+     * to the following month-end removes the case rather than special-casing it, and
+     * every cycle is then a full calendar month, first one included.
+     *
+     * Known asymmetry, accepted: created on the 1st gives a first window of nearly
+     * two months, because the rule does not check whether creation was already on a
+     * first. Nobody is disadvantaged by it and the branch costs more to explain than
+     * it saves. Note this shifts the due date, never current_date — the clock is the
+     * one mutable value in the system and member.created_at is stamped from it.
      */
     private Cycle appendCycleFor(Member recipient, StokvelConfig config) {
         Optional<Cycle> tail = cycleRepository.findTopByOrderBySequenceNumberDesc();
@@ -125,7 +139,7 @@ public class StokvelSetupService {
         int rotationNumber = tail.map(Cycle::getRotationNumber).orElse(1);
         LocalDate dueDate = tail
                 .map(cycle -> endOfMonth(cycle.getDueDate().plusMonths(1)))
-                .orElseGet(() -> endOfMonth(config.getCurrentDate()));
+                .orElseGet(() -> endOfMonth(config.getCurrentDate().plusMonths(1)));
 
         return new Cycle(sequenceNumber, rotationNumber, dueDate, recipient);
     }
