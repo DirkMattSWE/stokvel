@@ -1,13 +1,19 @@
 package com.stokvel.service;
 
+import com.stokvel.model.Cycle;
 import com.stokvel.model.Debt;
 import com.stokvel.model.Member;
 import com.stokvel.repository.AllocationRepository;
+import com.stokvel.repository.CycleRepository;
 import com.stokvel.repository.DebtRepository;
+import com.stokvel.repository.MemberRepository;
+import com.stokvel.repository.StokvelConfigRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -27,10 +33,20 @@ public class ArrearsService {
 
     private final DebtRepository debtRepository;
     private final AllocationRepository allocationRepository;
+    private final MemberRepository memberRepository;
+    private final CycleRepository cycleRepository;
+    private final StokvelConfigRepository configRepository;
 
-    public ArrearsService(DebtRepository debtRepository, AllocationRepository allocationRepository) {
+    public ArrearsService(DebtRepository debtRepository,
+                          AllocationRepository allocationRepository,
+                          MemberRepository memberRepository,
+                          CycleRepository cycleRepository,
+                          StokvelConfigRepository configRepository) {
         this.debtRepository = debtRepository;
         this.allocationRepository = allocationRepository;
+        this.memberRepository = memberRepository;
+        this.cycleRepository = cycleRepository;
+        this.configRepository = configRepository;
     }
 
     /** One debt and what is still owed on it — the debt row itself is unchanged. */
@@ -71,5 +87,125 @@ public class ArrearsService {
         return outstandingFor(debtor).stream()
                 .map(OutstandingDebt::outstanding)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * One member's side of one cycle: what that cycle expected of them, and what
+     * actually reached its pot.
+     *
+     * Both sides, not just the difference. Rule 2 only needs the shortfall, but the
+     * UI wants to say "Alice paid R300 of R500", and reconstructing the expected
+     * figure at the view layer would put a second thing in the system that knows
+     * what a contribution is.
+     */
+    public record CycleShortfall(Member member, BigDecimal expected, BigDecimal paid) {
+
+        /**
+         * Floored at zero because paid can legitimately exceed expected: a member
+         * who overpays has the excess allocated to the open cycle, so their side of
+         * the comparison comes back high. That is not a negative debt.
+         */
+        public BigDecimal shortfall() {
+            return expected.subtract(paid).max(BigDecimal.ZERO);
+        }
+
+        public boolean isShort() {
+            return shortfall().signum() > 0;
+        }
+    }
+
+    /**
+     * Who was short on one cycle, and by how much — the comparison Rule 2 turns into
+     * debt rows, and the same list a cycle view shows on screen.
+     *
+     * This reads the allocation table, not the debt table. Past arrears are
+     * irrelevant here: a member can owe R2,000 from three earlier cycles and still
+     * have paid this one in full, and they earn no new debt row for it. The debt
+     * table is what the caller is about to *write* from this answer.
+     *
+     * The recipient is included. They cannot owe themselves — CHECK (debtor_id <>
+     * creditor_id) — so PayoutService skips them when writing rows, but their
+     * shortfall is a real fact and the honest explanation of why their own pot came
+     * up light. Leaving them out here would make the arithmetic on screen look wrong.
+     *
+     * One sum query per liable member rather than one GROUP BY matched up in Java.
+     * A grouped query returns no row at all for a member with no allocations to this
+     * cycle — which is precisely a total non-payer, the row Rule 2 most needs to
+     * write. Same shape of hazard as the COALESCE on a sum over zero rows: a zero
+     * here is a real, knowable zero, not missing data. N is the member count, capped
+     * at twelve.
+     */
+    @Transactional(readOnly = true)
+    public List<CycleShortfall> shortfallsFor(Cycle cycle) {
+        BigDecimal expected = configRepository.require().getContributionAmount();
+
+        List<CycleShortfall> comparison = new ArrayList<>();
+        for (Member member : memberRepository.findAllByOrderByCreatedAtAscIdAsc()) {
+            if (!wasLiableFor(cycle, member)) {
+                continue;
+            }
+            BigDecimal paid = allocationRepository.sumByCycleIdAndMemberId(cycle.getId(), member.getId());
+            comparison.add(new CycleShortfall(member, expected, paid));
+        }
+        return comparison;
+    }
+
+    /**
+     * Rule 3's boundary. A member is liable for a cycle only if they joined strictly
+     * before it fell due — a member added on the due date itself is out, because the
+     * payout fires that same day and they would take a debt row having had no chance
+     * at all to pay.
+     *
+     * Only the cycle's own due date is compared against. The previous cycle's date
+     * never enters: a member who joined long before this cycle existed is also
+     * before its due date, which is correct, and one who joined after it is excluded,
+     * which is Rule 3 with no special case.
+     *
+     * UTC on both sides. created_at is stamped from StokvelConfig.simulatedNow(),
+     * which is the simulated date at UTC midnight, so converting back the same way
+     * is lossless — a local-zone conversion here is exactly how the stored date
+     * silently becomes the day before.
+     */
+    private static boolean wasLiableFor(Cycle cycle, Member member) {
+        LocalDate joined = LocalDate.ofInstant(member.getCreatedAt(), ZoneOffset.UTC);
+        return joined.isBefore(cycle.getDueDate());
+    }
+
+    /** A member and everything they still owe — what the arrears endpoint answers. */
+    public record MemberArrears(Member member, BigDecimal total, List<OutstandingDebt> debts) {
+    }
+
+    /**
+     * The id-taking entry points, for callers that arrived over HTTP and hold an
+     * untrusted number rather than a loaded row. The entity-taking methods above stay
+     * as they are — PayoutService is handed its rows by the clock and has nothing to
+     * look up.
+     *
+     * They resolve inside the transaction, which is what makes the fetch-joined
+     * associations usable by the time a DTO is built: open-in-view is off, so a lazy
+     * proxy escaping this boundary would fail at serialisation rather than here.
+     */
+    @Transactional(readOnly = true)
+    public MemberArrears arrearsFor(Long memberId) {
+        Member member = requireMember(memberId);
+        List<OutstandingDebt> debts = outstandingFor(member);
+        BigDecimal total = debts.stream()
+                .map(OutstandingDebt::outstanding)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return new MemberArrears(member, total, debts);
+    }
+
+    @Transactional(readOnly = true)
+    public List<CycleShortfall> shortfallsFor(Long cycleId) {
+        return shortfallsFor(cycleRepository.findById(cycleId).orElseThrow(
+                () -> new IllegalArgumentException("No cycle with id " + cycleId + ".")));
+    }
+
+    private Member requireMember(Long memberId) {
+        if (memberId == null) {
+            throw new IllegalArgumentException("A member id is required.");
+        }
+        return memberRepository.findById(memberId).orElseThrow(
+                () -> new IllegalArgumentException("No member with id " + memberId + "."));
     }
 }
