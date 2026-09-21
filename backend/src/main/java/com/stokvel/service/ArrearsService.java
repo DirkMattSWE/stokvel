@@ -138,10 +138,11 @@ public class ArrearsService {
     @Transactional(readOnly = true)
     public List<CycleShortfall> shortfallsFor(Cycle cycle) {
         BigDecimal expected = configRepository.require().getContributionAmount();
+        LocalDate windowOpened = windowOpenedFor(cycle);
 
         List<CycleShortfall> comparison = new ArrayList<>();
         for (Member member : memberRepository.findAllByOrderByCreatedAtAscIdAsc()) {
-            if (!wasLiableFor(cycle, member)) {
+            if (!wasLiableFor(windowOpened, member)) {
                 continue;
             }
             BigDecimal paid = allocationRepository.sumByCycleIdAndMemberId(cycle.getId(), member.getId());
@@ -151,24 +152,55 @@ public class ArrearsService {
     }
 
     /**
-     * Rule 3's boundary. A member is liable for a cycle only if they joined strictly
-     * before it fell due — a member added on the due date itself is out, because the
-     * payout fires that same day and they would take a debt row having had no chance
-     * at all to pay.
+     * Rule 3's boundary. A member is liable for a cycle only if they joined on or
+     * before the day that cycle's month began — a mid-cycle joiner is out of the
+     * round already in progress and liable from the next one, with no proration.
      *
-     * Only the cycle's own due date is compared against. The previous cycle's date
-     * never enters: a member who joined long before this cycle existed is also
-     * before its due date, which is correct, and one who joined after it is excluded,
-     * which is Rule 3 with no special case.
+     * The comparison is against the cycle's <em>window</em>, not its due date. Those
+     * two readings disagree for exactly one member — whoever joins partway through
+     * an open cycle — and that member is the reason Rule 4 exists: they do not
+     * contribute to the round they walked in on, and its recipient is compensated
+     * through a buy-in distribution instead, which is money that never touches a pot.
+     * Comparing against the due date would put the joiner's contribution into that
+     * pot, which reaches the same recipient by a route the rules do not allow.
+     *
+     * It is also the enforceable reading. As a contribution the joiner could simply
+     * not pay it and leave the recipient with a debt row; as a buy-in it is taken at
+     * the door or they do not join.
+     *
+     * A member added on a due date is liable for the cycle that begins that day and
+     * out of the one ending it — the payout fires that same day, so a debt row there
+     * would punish them for the hour they signed up.
      *
      * UTC on both sides. created_at is stamped from StokvelConfig.simulatedNow(),
      * which is the simulated date at UTC midnight, so converting back the same way
      * is lossless — a local-zone conversion here is exactly how the stored date
      * silently becomes the day before.
      */
-    private static boolean wasLiableFor(Cycle cycle, Member member) {
+    private static boolean wasLiableFor(LocalDate windowOpened, Member member) {
         LocalDate joined = LocalDate.ofInstant(member.getCreatedAt(), ZoneOffset.UTC);
-        return joined.isBefore(cycle.getDueDate());
+        return !joined.isAfter(windowOpened);
+    }
+
+    /**
+     * When this cycle's month began: the due date of the cycle before it, because a
+     * cycle has no start date of its own — it starts where the previous one ended.
+     *
+     * The first cycle of the stokvel has none, and there is no stored start date to
+     * stand in: current_date moves as the clock advances (Rule 8). It falls back to
+     * the day before its own due date, which keeps the liability test a single
+     * comparison and is right on the merits — before the first payout nobody has
+     * received anything, so there is nobody a buy-in could compensate, and a member
+     * arriving in that window can still pay into the first cycle normally.
+     *
+     * One extra query per payout, and read off the cycle row rather than computed as
+     * "one month back" — a second place that knew where a month ends would be a
+     * second place to get it wrong.
+     */
+    private LocalDate windowOpenedFor(Cycle cycle) {
+        return cycleRepository.findBySequenceNumber(cycle.getSequenceNumber() - 1)
+                .map(Cycle::getDueDate)
+                .orElseGet(() -> cycle.getDueDate().minusDays(1));
     }
 
     /** A member and everything they still owe — what the arrears endpoint answers. */

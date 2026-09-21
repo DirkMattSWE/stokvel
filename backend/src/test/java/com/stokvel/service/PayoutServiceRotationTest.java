@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Sql(scripts = "/schema.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
-@Import({StokvelSetupService.class, PaymentService.class, ArrearsService.class, PayoutService.class})
+@Import({StokvelSetupService.class, BuyinService.class, PaymentService.class, ArrearsService.class, PayoutService.class})
 class PayoutServiceRotationTest {
 
     private static final LocalDate START = LocalDate.of(2026, 1, 15);

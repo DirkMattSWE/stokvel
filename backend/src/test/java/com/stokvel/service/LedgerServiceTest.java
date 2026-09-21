@@ -32,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Sql(scripts = "/schema.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
-@Import({StokvelSetupService.class, PaymentService.class, ArrearsService.class,
+@Import({StokvelSetupService.class, BuyinService.class, PaymentService.class, ArrearsService.class,
         PayoutService.class, ClockService.class, LedgerService.class})
 class LedgerServiceTest {
 

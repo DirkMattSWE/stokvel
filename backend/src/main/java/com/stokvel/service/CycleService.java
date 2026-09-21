@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -82,19 +83,32 @@ public class CycleService {
     public List<CycleState> cycles() {
         BigDecimal contribution = configRepository.require().getContributionAmount();
         List<Member> members = memberRepository.findAllByOrderByCreatedAtAscIdAsc();
+        List<Cycle> cycles = cycleRepository.findAllWithRecipient();
 
-        return cycleRepository.findAllWithRecipient().stream()
-                .map(cycle -> new CycleState(
-                        cycle,
-                        // The pot as the recipient will actually receive it (Rule 1):
-                        // every allocation against this cycle, whoever paid it. This is
-                        // the same query PayoutService reads before paying out, on
-                        // purpose — summing only the liable members' contributions
-                        // would be a second answer to "what is in the pot" that could
-                        // disagree with the money actually handed over.
-                        allocationRepository.sumByCycleId(cycle.getId()),
-                        targetFor(cycle, members, contribution)))
-                .toList();
+        // An indexed walk rather than a stream, because a cycle's target depends on
+        // the cycle before it: liability runs from the day a cycle's month began,
+        // which is the previous cycle's due date. The list is already in sequence
+        // order, so the predecessor is free — ArrearsService has to query for it,
+        // holding one cycle rather than all of them.
+        List<CycleState> states = new ArrayList<>();
+        for (int i = 0; i < cycles.size(); i++) {
+            Cycle cycle = cycles.get(i);
+            LocalDate windowOpened = i == 0
+                    ? cycle.getDueDate().minusDays(1)
+                    : cycles.get(i - 1).getDueDate();
+
+            states.add(new CycleState(
+                    cycle,
+                    // The pot as the recipient will actually receive it (Rule 1):
+                    // every allocation against this cycle, whoever paid it. This is
+                    // the same query PayoutService reads before paying out, on
+                    // purpose — summing only the liable members' contributions
+                    // would be a second answer to "what is in the pot" that could
+                    // disagree with the money actually handed over.
+                    allocationRepository.sumByCycleId(cycle.getId()),
+                    targetFor(windowOpened, members, contribution)));
+        }
+        return states;
     }
 
     /**
@@ -107,15 +121,21 @@ public class CycleService {
      * screen would contradict the debt rows, which are written from the same
      * boundary.
      */
-    private static BigDecimal targetFor(Cycle cycle, List<Member> members, BigDecimal contribution) {
-        long liable = members.stream().filter(member -> wasLiableFor(cycle, member)).count();
+    private static BigDecimal targetFor(LocalDate windowOpened, List<Member> members, BigDecimal contribution) {
+        long liable = members.stream().filter(member -> wasLiableFor(windowOpened, member)).count();
         return contribution.multiply(BigDecimal.valueOf(liable));
     }
 
     /**
-     * Rule 3's boundary: liable only if they joined strictly before the cycle fell
-     * due. A member added on the due date itself is out — the payout fires that same
-     * day and they had no chance to pay.
+     * Rule 3's boundary: liable only if they joined on or before the day the cycle's
+     * month began. A member who joins partway through a cycle is out of it and
+     * liable from the next one — the round they walked in on is compensated by their
+     * buy-in instead (Rule 4), which is money that reaches its recipient without
+     * passing through a pot.
+     *
+     * So a joiner lowers the target of the cycle in progress rather than raising it,
+     * and the difference arrives on the ledger as a buy-in distribution. Reading the
+     * screen alongside the ledger is how that is meant to be checked.
      *
      * The same question ArrearsService asks, duplicated rather than shared, because
      * the two use the answer for different things: there it decides whether to write
@@ -127,8 +147,8 @@ public class CycleService {
      * the simulated date at UTC midnight. A local-zone conversion here is exactly how
      * a stored date silently becomes the day before.
      */
-    private static boolean wasLiableFor(Cycle cycle, Member member) {
-        return LocalDate.ofInstant(member.getCreatedAt(), ZoneOffset.UTC)
-                .isBefore(cycle.getDueDate());
+    private static boolean wasLiableFor(LocalDate windowOpened, Member member) {
+        return !LocalDate.ofInstant(member.getCreatedAt(), ZoneOffset.UTC)
+                .isAfter(windowOpened);
     }
 }

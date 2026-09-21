@@ -25,6 +25,17 @@ public interface CycleRepository extends JpaRepository<Cycle, Long> {
     Optional<Cycle> findTopByOrderBySequenceNumberDesc();
 
     /**
+     * The cycle immediately before this one, by sequence number — which is the cycle
+     * whose due date is when this one's month began (Rule 3's boundary).
+     *
+     * Safe to reach for with {@code sequenceNumber - 1} rather than an ORDER BY:
+     * sequence_number is UNIQUE, assigned as tail + 1, and cycles are never
+     * reordered or deleted, so there are no gaps for the arithmetic to fall into.
+     * Empty for the first cycle of the stokvel, which has no month before it.
+     */
+    Optional<Cycle> findBySequenceNumber(Integer sequenceNumber);
+
+    /**
      * Cycles with their recipient already loaded, for read endpoints that name the
      * member. Plain JOIN FETCH, not LEFT: recipient_id is NOT NULL, so there is no
      * row for an inner join to silently drop.

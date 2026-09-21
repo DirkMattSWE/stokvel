@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Sql(scripts = "/schema.sql", executionPhase = Sql.ExecutionPhase.BEFORE_TEST_CLASS)
-@Import({StokvelSetupService.class, PaymentService.class, ArrearsService.class,
+@Import({StokvelSetupService.class, BuyinService.class, PaymentService.class, ArrearsService.class,
         PayoutService.class, ClockService.class, CycleService.class})
 class CycleServiceTest {
 
@@ -134,11 +134,17 @@ class CycleServiceTest {
 
     /**
      * The one that earns wasLiableFor its place. Erik joins on 15 March, after cycle
-     * 1 has already fallen due on 29 February.
+     * 1 has already fallen due on 29 February and partway through cycle 2.
      *
      * Cycle 1's target stays R1,500 forever. Counting today's four members would show
      * February as R500 short of a contribution Erik never owed — and it would
      * contradict the debt rows, which are written from the very same boundary.
+     *
+     * Cycle 2's target is R1,500 too, and that is Rule 3: the round in progress on
+     * the day Erik arrived is one he is out of. Sarah is not left short by it — Erik
+     * compensates her through his buy-in (Rule 4), which is money that reaches her
+     * without passing through the pot. The screen shows a target of R1,500 and the
+     * ledger shows a top-up beside it, which is the pair that explains the rule.
      */
     @Test
     void a_cycles_target_counts_only_the_members_who_were_liable_for_it() {
@@ -158,9 +164,9 @@ class CycleServiceTest {
                 .extracting(CycleState::target)
                 .usingElementComparator(BigDecimal::compareTo)
                 .containsExactly(
-                        new BigDecimal("1500.00"),    // Erik had not joined yet
-                        new BigDecimal("2000.00"),    // joined 15 March, so liable
-                        new BigDecimal("2000.00"),
+                        new BigDecimal("1500.00"),    // over before Erik arrived
+                        new BigDecimal("1500.00"),    // in progress on 15 March — he is out of it
+                        new BigDecimal("2000.00"),    // and liable from the next one on
                         new BigDecimal("2000.00"));
     }
 

@@ -155,11 +155,17 @@ A single event, not a range — the range belongs to the cycle.
 
 Nothing allocates *to* a payout. Money flows out, not in.
 
-### `buyin` and `buyin_distribution` — build last
+### `buyin` and `buyin_distribution` — built, pass 6
 
 `buyin`: `id`, `member_id` (the joiner), `amount`, `created_at`
 
-`buyin_distribution`: `id`, `buyin_id`, `recipient_id` (an already-paid member), `amount`
+`buyin_distribution`: `id`, `buyin_id`, `recipient_id` (the recipient of a cycle the
+joiner missed), `amount` — always exactly one contribution
+
+No `cycle_id` on the distribution, and none is needed: a member receives at most one
+cycle per rotation, so the recipient identifies the round uniquely. Nothing points from
+a distribution back into `payment` or `allocation` either — that absence is the design,
+not a gap. See build-order pass 6.
 
 Same event-then-distribution shape as payment/allocation. Needed because one buy-in
 splits across several already-paid members proportionally to their gap (Rule 4) — a
@@ -187,6 +193,7 @@ single amount on a single row cannot express that.
 | Rotation length | `COUNT(member)` — equals `COUNT(cycle)` |
 | Who is behind | Expected vs actual allocations, per member per cycle |
 | Net received at payout | `payout.amount_paid − SUM(allocations from payments WHERE payout_id = ?)` |
+| What a joiner owes to buy in | `contribution_amount` × cycles of the current rotation they are not liable for |
 | The ledger | Union of payment / allocation / debt / payout / buyin rows in timestamp order |
 
 ---
@@ -204,9 +211,53 @@ mutated. Visible on the ledger indefinitely.
 **Rule 3 — late join goes to the back of the rotation.** Mid-cycle joiners are excluded
 from the in-progress cycle and become liable from the next one. No proration.
 
-**Rule 4 — buy-in fully compensates already-paid members.** The joiner pays the full gap;
-top-ups distribute immediately to affected members, not accrued as credit. Buy-in money
-does **not** enter the current pot.
+**The boundary is the cycle's *window*, not its due date — corrected 2026-09-21.**
+A member is liable for a cycle if they joined on or before the day that cycle's month
+began, which is the previous cycle's due date. Pass 3a implemented it against the
+cycle's own `due_date` instead, which made a mid-cycle joiner liable for the round
+already in progress — the opposite of the sentence above. The two readings disagree
+about exactly one member, and that member is the reason Rule 4 exists: the round they
+walked in on is compensated by their buy-in, not by their contribution.
+
+Same money either way; what differs is enforceability. As a contribution the joiner
+has until the due date and can simply not pay, leaving the recipient a debt row. As a
+buy-in it is taken at the door or they do not join — which is the deterrent the buy-in
+is for.
+
+The first cycle of the stokvel has no previous cycle to open its window, and no stored
+start date to stand in (`current_date` moves, Rule 8). It falls back to the day before
+its own due date. That keeps the test a single comparison and is right on the merits:
+before the first payout nobody has received anything, so there is nobody a buy-in could
+compensate, and a member arriving in that window can still pay into the first cycle
+normally. Without it, founding members added across two simulated days would be charged
+a buy-in for joining their own stokvel.
+
+**Rule 4 — buy-in fully compensates the members the joiner diluted.** The joiner pays
+the full gap; top-ups distribute immediately to affected members, not accrued as credit.
+Buy-in money does **not** enter the current pot.
+
+**In one sentence: one contribution for each cycle of the current rotation the joiner
+is not liable for, paid to that cycle's recipient.** That is the whole rule.
+
+"Already-paid members" was too narrow — settled 2026-09-21. The affected set is every
+member whose own round is sized for a shorter rotation than the one they now pay into,
+and under Rule 3's boundary that includes the recipient of the cycle in progress, whose
+payout has not fired yet. Driving the distribution off `payout` rows misses exactly that
+member, and then the books do not balance: they end one contribution short while the
+joiner ends one up.
+
+**"Proportionally to their gap" is a consequence, not a mechanism.** Each skipped
+cycle's recipient is short by exactly one contribution, and the joiner owes exactly one
+per skipped cycle, so the two sides are equal row for row. There is no division, no
+rounding mode to choose and no remainder to assign — and no correction term for a
+buy-in an earlier joiner already paid, because nothing asks about a member's net
+position. It stays true only while the amount is *derived*; a passed-in amount would
+bring the proportional split back with it.
+
+Scoped to the current rotation — the rotation the joiner's own new cycle belongs to. A
+rotation that has closed was already square, and a rotation generated whole has every
+member liable for every cycle, so the next one computes to zero. "Once, when you join"
+needs no flag to enforce.
 
 **Rule 5 — rotation order fixed at creation.** `member.created_at` is the order.
 `cycle.recipient_id` is set once, at cycle creation. Never reordered.
@@ -304,13 +355,16 @@ src/main/java/com/stokvel/
 │   └── Allocation.java
 ├── repository/                     Spring Data JPA interfaces, thin
 │   └── MemberRepository.java, CycleRepository.java, PaymentRepository.java,
-│       AllocationRepository.java, DebtRepository.java, PayoutRepository.java
+│       AllocationRepository.java, DebtRepository.java, PayoutRepository.java,
+│       BuyinRepository.java, BuyinDistributionRepository.java
 ├── service/                        ALL business logic lives here
 │   ├── StokvelSetupService.java    create config, add members
 │   ├── PaymentService.java         recordPayment → allocation logic (Rule 7)
 │   ├── ClockService.java           advanceClock, checkDue (Rule 8)
 │   ├── PayoutService.java          fires payout, arrears deduction (Rule 6)
 │   ├── ArrearsService.java         derived debt queries
+│   ├── BuyinService.java           late-join compensation (Rule 4)
+│   ├── CycleService.java           cycle state: pot vs target
 │   └── LedgerService.java          the union query
 ├── controller/                     thin; calls services only
 │   └── SetupController.java, PaymentController.java, ClockController.java,
@@ -780,7 +834,11 @@ edge cases are part of the design rather than a check on it.
    simulated day has a byte-identical `created_at`, because the clock is a date and
    `simulatedNow()` is its midnight. Sorting on the timestamp alone would leave a
    payout and its deduction in whichever order the merge produced. The rank is the
-   causal order: `PAYMENT 0 → DEBT 1 → PAYOUT 2 → DEDUCTION 3`. Timestamp groups by
+   causal order: `PAYMENT 0 → BUYIN 1 → DEBT 2 → PAYOUT 3 → DEDUCTION 4`. `BUYIN`
+   sits with the inflows because a buy-in can compensate a cycle whose payout fires
+   the same simulated day — a member joining on a due date is out of that cycle and
+   tops its recipient up — and ranked below it the ledger would show the recipient
+   paid before the money covering their shortfall arrived. Timestamp groups by
    day, rank orders within the day, and a stable sort over id-ordered queries settles
    two rows sharing both.
 
@@ -810,8 +868,14 @@ edge cases are part of the design rather than a check on it.
    `advanceClock`. `recordArrearsDeduction` and `firePayout` are always reached from
    inside another service's transaction, so a push from there would send clients a
    half-finished picture (debts written, no payout yet) and replace it a moment later.
-   `addMember` does not broadcast either: it writes no ledger row, and claiming
+   `addMember` did not broadcast either: it wrote no ledger row, and claiming
    otherwise would be a push that says nothing changed. One push per user action.
+
+   **That last part changed in pass 6, and the reason it gives is why.** A buy-in
+   *is* ledger rows, so `addMember` now broadcasts — but only when a buy-in was
+   written. A founding member still writes nothing and still pushes nothing, so the
+   rule the original note was protecting is the reason for the condition rather than
+   a casualty of it.
 
    **The whole ledger is pushed, not a delta** — the server owns state and clients
    re-render from it, so there is no client-side merge to write and no way to drift.
@@ -820,8 +884,47 @@ edge cases are part of the design rather than a check on it.
    pushed anything. There is no `POST`, and there never will be: a way to write a line
    directly would be the second source of truth that not having a ledger table
    prevents.
-6. **Buy-in** (Rule 4). If it does not make the build, it is presented as a
-   specified-and-scoped rule.
+6. **Buy-in** (Rule 4) — **done 2026-09-21**, twelve tests, suite at **80**.
+   `BuyinService`, the two repositories, the `addMember` change, `BUYIN` on the
+   ledger, and the Rule 3 boundary correction it forced.
+
+   **It runs inside `addMember`, not as a call afterwards.** That method is one
+   transaction, so there is no instant at which a member exists without having bought
+   in. The temporal constraint everyone reaches for — buy in before any payout the
+   joiner affects, and do not let the clock move in between — therefore needs no
+   wiring at all: it is unrepresentable rather than merely agreed. Same move as
+   `findOpenCycle()` taking no date parameter.
+
+   **The distribution is driven off cycles, not payouts and not the member list.**
+   Payouts are the wrong source — the cycle in progress has no payout row, and its
+   recipient is precisely the member Rule 4 was widened to cover. The member list is
+   unnecessary: cycle rows already carry `recipient_id` in rotation order, so the
+   ordering is a column rather than a second query to line up. And because due dates
+   increase along a rotation, the missed cycles are a *prefix*, which is why no third
+   copy of `wasLiableFor` appears anywhere.
+
+   **A distribution is not a payment, and the ERD is not missing a link.** The
+   absence of one is the decision. Routing top-ups through `payment`/`allocation`
+   breaks three ways: `CHECK ((cycle_id IS NULL) <> (debt_id IS NULL))` has no third
+   destination to offer; Rule 7 would settle the joiner's (non-existent) arrears and
+   drop the remainder into the open cycle's pot, which is the one thing Rule 4
+   forbids; and a payment row naming the recipient would claim they handed money over
+   when they received it. Money flowing *out* to a named member is the `payout`
+   shape, where nothing allocates in.
+
+   **Dependency direction:** `StokvelSetupService → BuyinService → repositories`. A
+   leaf off a different root, not a link in the `ClockService → … → ArrearsService`
+   chain — `ClockService` never learns that buy-ins exist.
+
+   **The tests that carry weight are the conservation ones.**
+   `across_a_whole_rotation_every_member_puts_in_exactly_what_they_take_out` runs a
+   four-member rotation to its end and asserts every member's total in equals their
+   total out. It fails if the buy-in is one cycle too small (the old "already-paid
+   members only" reading), one cycle too large, or paid to the wrong members — the
+   three things that were live design questions during this pass. A happy-path
+   assertion says "R1,000 was distributed"; only that total says it was the *right*
+   R1,000. `buy_in_money_never_reaches_a_pot` is the other one: R1,000 changes hands
+   and no pot moves.
 7. **Polish** — legible from the back of the room.
 
 **Dependency direction, one way, no cycles:**
@@ -903,7 +1006,7 @@ floor gets asserted at the record level instead. The floor in `CycleShortfall` s
 either way: it is cheap, and it is the kind of guard that should not depend on another
 service continuing to refuse things.
 
-**Buy-in scope — the author wants to revisit this, raised 2026-09-21.** Rule 4 as
+**~~Buy-in scope~~ — settled 2026-09-21, the author's call, and it was right.** Rule 4 as
 written compensates *already-paid* members for the gap between the pot they received
 and the longer rotation they now contribute to. The author's position is that it should
 also cover **the cycle in progress at the moment of joining**, on the grounds that its
@@ -921,8 +1024,24 @@ to and hands its recipient a bonus for the timing of someone else's arrival. The
 sound alike in conversation and are structurally different. Rule 3 stays either way:
 re-confirmed 2026-09-21, and it costs no code.
 
-Deferred because buy-in is build-order item 6, the designated casualty if the build
-runs short. Decide it when that pass starts.
+**Settled, with one correction to the reasoning.** Widening the set is not merely
+fairer — it is forced. Cover only the elapsed months and the in-progress recipient
+finishes one contribution short while the joiner finishes one up; the books do not
+balance. That is what
+`BuyinServiceTest.across_a_whole_rotation_every_member_puts_in_exactly_what_they_take_out`
+asserts.
+
+The guardrail above survives intact and is worth restating, because it describes
+something the code briefly did. "Making the joiner contribute to the in-progress cycle"
+was pass 3a's `wasLiableFor`, comparing against the cycle's own due date. It was not in
+fact a pot inflation — the pot grew and the rotation grew by the same cycle, so the
+recipient got no bonus — but it made the money arrive as a contribution the joiner
+could default on rather than a buy-in taken at the door, and it left Rule 3's text
+false. Rule 3's boundary was corrected in pass 6; see the rule itself.
+
+Rule 3 stays, then, in the sense that matters: the joiner does not pay into the round
+they walked in on. Its recipient is made whole through `buyin_distribution`, which is
+money that never touches a pot.
 
 **~~Two read endpoints the frontend needs~~ — settled 2026-09-21.** Every endpoint
 but three used to be a `POST`: there was no way to list members, so the member
@@ -965,6 +1084,20 @@ controller looping to fetch each pot, which is N+1 driven from transport.
   different use of the answer: there it decides whether a debt row is written, here
   whether a contribution joins a target. Merging them would let a change made for a
   display figure change who owes money.
+
+  **The duplication got more expensive in pass 6, and this is where to watch it.**
+  The rule is no longer a one-line date comparison: it compares against the cycle's
+  window, which means finding the previous cycle, and it has a fallback for the first
+  cycle of the stokvel. Each copy now gets that from whatever it already holds —
+  `CycleService` walks its ordered list and takes the predecessor for free,
+  `ArrearsService` queries `findBySequenceNumber` because it holds one cycle. Two
+  copies of a rule with a special case is two places to get the special case wrong,
+  and the argument for keeping them apart cuts both ways now: `CycleService`'s own
+  comment says a drifting target "would contradict the debt rows, which are written
+  from the very same boundary" — which is a reason to *want* them to agree. Left
+  duplicated deliberately; flagged as the thing to merge first if a third caller
+  ever needs it. `BuyinService` is not that caller — it asks which cycles are a
+  prefix, not whether one member is liable.
 
 Seven tests. The two that carry weight are
 `a_cycles_target_counts_only_the_members_who_were_liable_for_it` — Erik joins 15

@@ -1,10 +1,14 @@
 package com.stokvel.service;
 
 import com.stokvel.model.Allocation;
+import com.stokvel.model.Buyin;
+import com.stokvel.model.BuyinDistribution;
 import com.stokvel.model.Debt;
 import com.stokvel.model.Payment;
 import com.stokvel.model.Payout;
 import com.stokvel.repository.AllocationRepository;
+import com.stokvel.repository.BuyinDistributionRepository;
+import com.stokvel.repository.BuyinRepository;
 import com.stokvel.repository.DebtRepository;
 import com.stokvel.repository.PaymentRepository;
 import com.stokvel.repository.PayoutRepository;
@@ -49,15 +53,21 @@ public class LedgerService {
     private final AllocationRepository allocationRepository;
     private final DebtRepository debtRepository;
     private final PayoutRepository payoutRepository;
+    private final BuyinRepository buyinRepository;
+    private final BuyinDistributionRepository distributionRepository;
 
     public LedgerService(PaymentRepository paymentRepository,
                          AllocationRepository allocationRepository,
                          DebtRepository debtRepository,
-                         PayoutRepository payoutRepository) {
+                         PayoutRepository payoutRepository,
+                         BuyinRepository buyinRepository,
+                         BuyinDistributionRepository distributionRepository) {
         this.paymentRepository = paymentRepository;
         this.allocationRepository = allocationRepository;
         this.debtRepository = debtRepository;
         this.payoutRepository = payoutRepository;
+        this.buyinRepository = buyinRepository;
+        this.distributionRepository = distributionRepository;
     }
 
     /**
@@ -84,12 +94,23 @@ public class LedgerService {
     public enum EntryType {
         /** A member handed money over. Rule 7 decides where it landed. */
         PAYMENT(0),
+        /**
+         * A joiner paid for the rounds they were not there for, and it went straight
+         * out again to the members those rounds belonged to (Rule 4).
+         *
+         * Ranked with the inflows, above DEBT and PAYOUT, because a buy-in can
+         * compensate a cycle whose payout fires the very same simulated day — a
+         * member joining on a due date is out of that cycle and tops up its
+         * recipient. Ranked below it, the ledger would show the recipient being paid
+         * before the money that made up their pot's shortfall arrived.
+         */
+        BUYIN(1),
         /** Someone was short on a cycle and now owes a named creditor (Rule 2). */
-        DEBT(1),
+        DEBT(2),
         /** A cycle came due and its recipient took their turn, gross (Rules 1, 6). */
-        PAYOUT(2),
+        PAYOUT(3),
         /** The arrears taken straight back out of that payout (Rule 6). */
-        DEDUCTION(3);
+        DEDUCTION(4);
 
         private final int rank;
 
@@ -160,6 +181,8 @@ public class LedgerService {
     public List<LedgerEntry> getLedger() {
         Map<Long, List<Allocation>> slicesByPayment = allocationRepository.findAllForLedger().stream()
                 .collect(Collectors.groupingBy(allocation -> allocation.getPayment().getId()));
+        Map<Long, List<BuyinDistribution>> topUpsByBuyin = distributionRepository.findAllForLedger().stream()
+                .collect(Collectors.groupingBy(topUp -> topUp.getBuyin().getId()));
 
         List<LedgerEntry> entries = new ArrayList<>();
         for (Payment payment : paymentRepository.findAllForLedger()) {
@@ -170,6 +193,9 @@ public class LedgerService {
         }
         for (Payout payout : payoutRepository.findAllForLedger()) {
             entries.add(toEntry(payout));
+        }
+        for (Buyin buyin : buyinRepository.findAllForLedger()) {
+            entries.add(toEntry(buyin, topUpsByBuyin.getOrDefault(buyin.getId(), List.of())));
         }
 
         entries.sort(Comparator.comparing(LedgerEntry::at)
@@ -233,6 +259,45 @@ public class LedgerService {
                 cycle,
                 payout.getRecipient().getName() + " received cycle " + cycle + "'s pot",
                 List.of());
+    }
+
+    /**
+     * Rule 4. One line for the buy-in, with the members it reached underneath it.
+     *
+     * The same event-with-its-detail shape as a payment and its allocations, and for
+     * the same reason: a buyin_distribution row has no created_at of its own, so it
+     * could only ever borrow its buy-in's and sort beside it. A row that cannot move
+     * independently is detail of an event, not an event. That the ledger reads this
+     * way without any new machinery is the schema being read back rather than a
+     * structure imposed on it.
+     *
+     * No counterparty on the line, unlike a debt: a buy-in faces several members at
+     * once, and naming one of them would be choosing. They are all in the slices.
+     */
+    private LedgerEntry toEntry(Buyin buyin, List<BuyinDistribution> topUps) {
+        String name = buyin.getMember().getName();
+        return new LedgerEntry(
+                buyin.getCreatedAt(),
+                EntryType.BUYIN,
+                name,
+                null,
+                buyin.getAmount(),
+                null,
+                name + " bought into the rotation already under way",
+                topUps.stream().map(LedgerService::toSlice).toList());
+    }
+
+    /**
+     * Where one slice of a buy-in landed: with a member whose own round was sized
+     * for a smaller rotation than the one they now pay into (Rule 4).
+     *
+     * Every slice is exactly one contribution, because the joiner owes one per cycle
+     * they missed and each of those cycles' recipients is short by one. There is no
+     * proportional division to render, which is why this says who rather than how
+     * much of what.
+     */
+    private static LedgerSlice toSlice(BuyinDistribution topUp) {
+        return new LedgerSlice(topUp.getAmount(), "top-up to " + topUp.getRecipient().getName());
     }
 
     /**

@@ -6,6 +6,7 @@ import com.stokvel.model.StokvelConfig;
 import com.stokvel.repository.CycleRepository;
 import com.stokvel.repository.MemberRepository;
 import com.stokvel.repository.StokvelConfigRepository;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,13 +29,19 @@ public class StokvelSetupService {
     private final StokvelConfigRepository configRepository;
     private final MemberRepository memberRepository;
     private final CycleRepository cycleRepository;
+    private final BuyinService buyinService;
+    private final LedgerBroadcaster broadcaster;
 
     public StokvelSetupService(StokvelConfigRepository configRepository,
                                MemberRepository memberRepository,
-                               CycleRepository cycleRepository) {
+                               CycleRepository cycleRepository,
+                               BuyinService buyinService,
+                               LedgerBroadcaster broadcaster) {
         this.configRepository = configRepository;
         this.memberRepository = memberRepository;
         this.cycleRepository = cycleRepository;
+        this.buyinService = buyinService;
+        this.broadcaster = broadcaster;
     }
 
     /**
@@ -50,8 +57,16 @@ public class StokvelSetupService {
         return memberRepository.findAllByOrderByCreatedAtAscIdAsc();
     }
 
-    /** Both rows written by {@link #addMember(String)}. */
-    public record MemberAdded(Member member, Cycle cycle) {
+    /**
+     * Everything {@link #addMember(String)} wrote: the member, the cycle they
+     * brought with them, and the buy-in they paid to join a rotation already under
+     * way (Rule 4).
+     *
+     * buyin is null for a founding member, who missed nothing. That is the ordinary
+     * case, not a missing value — the same shape as PayoutOutcome carrying no
+     * deduction when the recipient owed nothing.
+     */
+    public record MemberAdded(Member member, Cycle cycle, BuyinService.BuyinRecorded buyin) {
     }
 
     /**
@@ -120,7 +135,27 @@ public class StokvelSetupService {
 
         Member member = memberRepository.save(new Member(name.trim(), config.simulatedNow()));
         Cycle cycle = cycleRepository.save(appendCycleFor(member, config));
-        return new MemberAdded(member, cycle);
+
+        // Rule 4, and it happens here rather than in a call the caller makes next.
+        // This method is one transaction, so there is no instant at which a member
+        // exists without having bought in — which is what makes the buy-in a
+        // condition of joining rather than a step someone remembers, and what makes
+        // "buy in before any payout the joiner affects" unrepresentable rather than
+        // merely agreed. The cycle is saved first because the buy-in reads the
+        // rotation this member just lengthened.
+        BuyinService.BuyinRecorded buyin = buyinService.recordBuyinFor(member).orElse(null);
+
+        // Broadcast only when there was a buy-in. CLAUDE.md recorded that addMember
+        // does not push, on the grounds that it writes no ledger row and a push
+        // saying nothing changed is worse than none — that reasoning expires here,
+        // because a buy-in is ledger rows. A founding member still writes none, so
+        // the rule it was protecting ("one push per user action, and only when
+        // something changed") is the reason for the condition rather than a casualty
+        // of it.
+        if (buyin != null) {
+            broadcaster.broadcast();
+        }
+        return new MemberAdded(member, cycle, buyin);
     }
 
     /**
