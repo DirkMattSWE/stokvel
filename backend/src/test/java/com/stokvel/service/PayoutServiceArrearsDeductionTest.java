@@ -93,7 +93,7 @@ class PayoutServiceArrearsDeductionTest {
     void a_payout_with_no_arrears_writes_no_deduction_payment() {
         everyonePays(CONTRIBUTION);
 
-        Payout payout = payoutService.firePayout(cycleOne());
+        Payout payout = payoutService.firePayout(cycleOne()).payout();
 
         assertThat(payout.getAmountPaid()).isEqualByComparingTo("1500.00");
         assertThat(payout.getRecipient().getId()).isEqualTo(john.getId());
@@ -109,7 +109,7 @@ class PayoutServiceArrearsDeductionTest {
      */
     @Test
     void an_empty_pot_still_fires_a_payout_for_zero() {
-        Payout payout = payoutService.firePayout(cycleOne());
+        Payout payout = payoutService.firePayout(cycleOne()).payout();
 
         assertThat(payout.getAmountPaid()).isEqualByComparingTo("0.00");
         assertThat(payoutRepository.findAll()).hasSize(1);
@@ -136,7 +136,7 @@ class PayoutServiceArrearsDeductionTest {
         paymentService.recordPayment(john.getId(), CONTRIBUTION);
         paymentService.recordPayment(thabo.getId(), CONTRIBUTION);
 
-        Payout payout = payoutService.firePayout(cycleTwo());
+        Payout payout = payoutService.firePayout(cycleTwo()).payout();
 
         assertThat(payout.getAmountPaid())
                 .as("the row records what the pot held, before anything came out")
@@ -167,7 +167,7 @@ class PayoutServiceArrearsDeductionTest {
         sarahMissesJanuaryAndOwesJohn();
         everyonePays(CONTRIBUTION);
 
-        Payout payout = payoutService.firePayout(cycleTwo());
+        Payout payout = payoutService.firePayout(cycleTwo()).payout();
 
         assertThat(arrearsService.totalOutstandingFor(sarah))
                 .as("her own payment already settled it, under Rule 7")
@@ -187,7 +187,7 @@ class PayoutServiceArrearsDeductionTest {
         paymentService.recordPayment(john.getId(), CONTRIBUTION);
         paymentService.recordPayment(thabo.getId(), CONTRIBUTION);
 
-        Payout payout = payoutService.firePayout(cycleTwo());
+        Payout payout = payoutService.firePayout(cycleTwo()).payout();
         Payment deduction = paymentRepository.findByPayoutId(payout.getId()).orElseThrow();
 
         List<Allocation> settled = allocationRepository.findByPaymentId(deduction.getId());
@@ -214,7 +214,7 @@ class PayoutServiceArrearsDeductionTest {
         sarahMissesJanuaryAndOwesJohn();
         paymentService.recordPayment(john.getId(), new BigDecimal("300.00"));
 
-        Payout payout = payoutService.firePayout(cycleTwo());
+        Payout payout = payoutService.firePayout(cycleTwo()).payout();
 
         assertThat(payout.getAmountPaid()).isEqualByComparingTo("300.00");
         assertThat(paymentRepository.findByPayoutId(payout.getId()).orElseThrow().getAmount())
@@ -235,7 +235,7 @@ class PayoutServiceArrearsDeductionTest {
     void an_empty_pot_deducts_nothing_even_when_arrears_are_owed() {
         sarahMissesJanuaryAndOwesJohn();
 
-        Payout payout = payoutService.firePayout(cycleTwo());
+        Payout payout = payoutService.firePayout(cycleTwo()).payout();
 
         assertThat(payout.getAmountPaid()).isEqualByComparingTo("0.00");
         assertThat(paymentRepository.findByPayoutId(payout.getId())).isEmpty();

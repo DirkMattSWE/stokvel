@@ -89,11 +89,38 @@ public class PayoutService {
      * rule ever does let the two sets overlap.
      */
     @Transactional
-    public Payout firePayout(Cycle cycle) {
+    public PayoutOutcome firePayout(Cycle cycle) {
         recordShortfallsAsDebt(cycle);
-        Payout payout = payRecipient(cycle);
+        PayoutOutcome outcome = payRecipient(cycle);
         continueRotation(cycle);
-        return payout;
+        return outcome;
+    }
+
+    /**
+     * What firing a payout produced: the gross payout row, and the arrears deduction
+     * that came back out of it (Rule 6).
+     *
+     * Two rows in two tables, so two values — the same shape as
+     * StokvelSetupService.MemberAdded and PaymentService.RecordedPayment, for the
+     * same reason. The payout row alone cannot say what the recipient actually
+     * received: amount_paid is gross by design, and the net is derived as
+     * amount_paid minus the deduction payment. Returning the pair is what stops a
+     * caller having to re-read a row this method just wrote.
+     *
+     * deduction is null when the recipient owed nothing. That is the ordinary case,
+     * not a missing value — no deduction row is written, because a zero-amount
+     * payment is a fact about nothing and CHECK (amount > 0) would reject it.
+     */
+    public record PayoutOutcome(Payout payout, PaymentService.RecordedPayment deduction) {
+
+        /** Rule 6's arithmetic, derived rather than stored: gross minus what was taken back. */
+        public BigDecimal netReceived() {
+            return payout.getAmountPaid().subtract(deducted());
+        }
+
+        public BigDecimal deducted() {
+            return deduction == null ? BigDecimal.ZERO : deduction.payment().getAmount();
+        }
     }
 
     /**
@@ -115,18 +142,25 @@ public class PayoutService {
      * payment is a fact about nothing, and CHECK (amount > 0) would reject it — a
      * payout with no deduction is the ordinary case, not an edge case.
      */
-    private Payout payRecipient(Cycle cycle) {
+    private PayoutOutcome payRecipient(Cycle cycle) {
         Member recipient = cycle.getRecipient();
         BigDecimal pot = allocationRepository.sumByCycleId(cycle.getId());
 
+        // Saved before the deduction, and not for tidiness: the deduction payment
+        // carries payout_id back to this row, so the row has to exist to be pointed at.
         Payout payout = payoutRepository.save(
                 new Payout(cycle, recipient, pot, configRepository.require().simulatedNow()));
 
         BigDecimal deduction = pot.min(arrearsService.totalOutstandingFor(recipient));
-        if (deduction.signum() > 0) {
-            paymentService.recordArrearsDeduction(payout, deduction);
+        if (deduction.signum() == 0) {
+            return new PayoutOutcome(payout, null);
         }
-        return payout;
+
+        // The RecordedPayment is kept, not discarded. It is the only place the names
+        // of the settled creditors exist — payment.amount can say R200 came back out,
+        // but not who it reached — and re-reading it afterwards would be querying for
+        // a row written three lines earlier.
+        return new PayoutOutcome(payout, paymentService.recordArrearsDeduction(payout, deduction));
     }
 
     /**
