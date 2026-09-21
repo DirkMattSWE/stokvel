@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -34,6 +35,19 @@ public class StokvelSetupService {
         this.configRepository = configRepository;
         this.memberRepository = memberRepository;
         this.cycleRepository = cycleRepository;
+    }
+
+    /**
+     * The members, in rotation order (Rule 5) — creation order, never reordered.
+     *
+     * ORDER BY created_at, id, not created_at alone: created_at comes from the
+     * simulated clock, so members added on the same simulated day share a timestamp
+     * to the byte. id is append-only and monotonic, which settles the tie without
+     * reintroducing a position column.
+     */
+    @Transactional(readOnly = true)
+    public List<Member> members() {
+        return memberRepository.findAllByOrderByCreatedAtAscIdAsc();
     }
 
     /** Both rows written by {@link #addMember(String)}. */

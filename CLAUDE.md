@@ -924,15 +924,59 @@ re-confirmed 2026-09-21, and it costs no code.
 Deferred because buy-in is build-order item 6, the designated casualty if the build
 runs short. Decide it when that pass starts.
 
-**Two read endpoints the frontend needs do not exist yet — noticed 2026-09-21.**
-Every endpoint but three is a `POST`. There is no way to **list** members, so the
-member dropdown has nothing to populate from, and no way to read the cycles, so
-nothing tells the UI whose turn it is, what the pot holds or when it falls due.
-`CycleRepository.findAllWithRecipient()` already exists and is unused.
+**~~Two read endpoints the frontend needs~~ — settled 2026-09-21.** Every endpoint
+but three used to be a `POST`: there was no way to list members, so the member
+dropdown had nothing to populate from, and no way to read the cycles, so nothing told
+the UI whose turn it was or what the pot held.
 
-Both are methods on controllers that already exist — `GET /api/setup/members` and a
-`GET /api/cycles` beside the shortfalls endpoint. **Five controllers is final.** Pure
-mapping, no rules, so this is the mechanical work a low-effort model does.
+`GET /api/setup/members` went on `SetupController`, beside the `POST` that creates
+one, backed by `StokvelSetupService.members()` — ordered `created_at, id`, which is
+rotation order (Rule 5).
+
+`GET /api/cycles` needed more than mapping, so it got **`CycleService`** and a sixth
+controller. *Five controllers was wrong as soon as this service existed* — a
+controller with no service of its own would have meant assembling the answer in the
+transport layer.
+
+**`CycleService` is `LedgerService`'s sibling, and the split is the point.** The
+ledger answers *what happened, in order?*; this answers *what is the state right
+now?*. The ledger genuinely cannot answer the second: a pot appears there only as a
+slice under a payment labelled `"cycle 2 pot"`, so recovering the figure would mean
+parsing a display string back into a number — and a *target* is not an event at all,
+so no row carries it.
+
+`cycles()` returns `CycleState(Cycle, collected, target)`, both derived, nothing
+stored. One method rather than a list method plus a pot method: two would leave the
+controller looping to fetch each pot, which is N+1 driven from transport.
+
+- **`collected` is `AllocationRepository.sumByCycleId`** — the same query
+  `PayoutService.payRecipient` reads before paying out, deliberately. Summing only the
+  liable members' contributions would be a second answer to "what is in the pot" that
+  could disagree with the money actually handed over. They differ in one real case: a
+  member who joined too late to be liable for a cycle can still have money land in it,
+  because `findOpenCycle()` puts a payment in the earliest unpaid cycle whoever made
+  it. `shortfall()` is floored at zero for exactly that.
+- **`target` is the contribution times the members liable for *that* cycle**, not
+  times today's member count. A member who joined in month four was never liable for
+  month two, so counting them would show month two as permanently short by a
+  contribution nobody owed — and would contradict the debt rows, which are written
+  from the same boundary.
+- **`wasLiableFor` is duplicated from `ArrearsService`, not shared.** Same question,
+  different use of the answer: there it decides whether a debt row is written, here
+  whether a contribution joins a target. Merging them would let a change made for a
+  display figure change who owes money.
+
+Seven tests. The two that carry weight are
+`a_cycles_target_counts_only_the_members_who_were_liable_for_it` — Erik joins 15
+March and cycle 1 stays at R1,500 — and `money_that_settled_a_debt_never_shows_up_in
+_a_pot`, which fails the moment anyone reads a pot from payments instead of
+allocations.
+
+**Amounts are compared numerically in tests, never as strings.**
+`COALESCE(SUM(...), 0.00)` comes back from SQLite without the scale the
+`DECIMAL(19,2)` columns carry, so a pot reads `500` where a `payment.amount` reads
+`500.00`. Same money. A string comparison asserts the driver's formatting instead of
+the amount, and the frontend formats for display anyway.
 
 **Cycle and rotation state is deliberately not on the ledger.** The ledger answers
 *what happened, in order?*; whose turn it is and what the pot holds is *what is the
