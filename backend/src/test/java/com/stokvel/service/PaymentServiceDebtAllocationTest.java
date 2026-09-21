@@ -12,11 +12,13 @@ import com.stokvel.repository.PayoutRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.BeforeEach;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 
 import java.math.BigDecimal;
@@ -56,6 +58,14 @@ class PaymentServiceDebtAllocationTest {
      */
     private static final LocalDate JANUARY = LocalDate.of(2026, 1, 31);
     private static final LocalDate FEBRUARY = LocalDate.of(2026, 2, 28);
+
+    /**
+     * Transport, not a rule — mocked rather than wired. The services call it at the
+     * end of a mutating method; what it sends is LedgerService's job and is tested
+     * there, and a STOMP broker has no business inside a @DataJpaTest.
+     */
+    @MockitoBean
+    private LedgerBroadcaster broadcaster;
 
     @Autowired
     private StokvelSetupService setupService;

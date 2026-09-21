@@ -5,11 +5,13 @@ import com.stokvel.model.Member;
 import com.stokvel.model.StokvelConfig;
 import com.stokvel.repository.CycleRepository;
 import com.stokvel.repository.StokvelConfigRepository;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 
 import java.math.BigDecimal;
@@ -39,6 +41,14 @@ class PayoutServiceRotationTest {
 
     private static final LocalDate START = LocalDate.of(2026, 1, 15);
     private static final BigDecimal CONTRIBUTION = new BigDecimal("500.00");
+
+    /**
+     * Transport, not a rule — mocked rather than wired. The services call it at the
+     * end of a mutating method; what it sends is LedgerService's job and is tested
+     * there, and a STOMP broker has no business inside a @DataJpaTest.
+     */
+    @MockitoBean
+    private LedgerBroadcaster broadcaster;
 
     @Autowired
     private StokvelSetupService setupService;

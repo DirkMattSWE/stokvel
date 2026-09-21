@@ -5,6 +5,7 @@ import com.stokvel.model.StokvelConfig;
 import com.stokvel.repository.CycleRepository;
 import com.stokvel.repository.StokvelConfigRepository;
 import com.stokvel.service.PayoutService.PayoutOutcome;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,13 +41,16 @@ public class ClockService {
     private final StokvelConfigRepository configRepository;
     private final CycleRepository cycleRepository;
     private final PayoutService payoutService;
+    private final LedgerBroadcaster broadcaster;
 
     public ClockService(StokvelConfigRepository configRepository,
                         CycleRepository cycleRepository,
-                        PayoutService payoutService) {
+                        PayoutService payoutService,
+                        LedgerBroadcaster broadcaster) {
         this.configRepository = configRepository;
         this.cycleRepository = cycleRepository;
         this.payoutService = payoutService;
+        this.broadcaster = broadcaster;
     }
 
     /**
@@ -91,7 +95,17 @@ public class ClockService {
         config.setCurrentDate(target);
         configRepository.save(config);
 
-        return checkDue();
+        List<PayoutOutcome> fired = checkDue();
+
+        // Broadcast here, at the outermost mutating method, rather than in
+        // PayoutService or PaymentService. Both are only ever reached from inside
+        // this transaction, so pushing from there would send clients a half-finished
+        // picture — debts written but no payout yet — and replace it a moment later.
+        // One push per user action is fewer messages and a state that was never
+        // incoherent. It also means the clock's own date change and the payouts it
+        // caused reach the client together, as the single event they are.
+        broadcaster.broadcast();
+        return fired;
     }
 
     /**

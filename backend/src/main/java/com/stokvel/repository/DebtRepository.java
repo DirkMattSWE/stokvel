@@ -10,7 +10,17 @@ import java.util.List;
 
 public interface DebtRepository extends JpaRepository<Debt, Long> {
 
-    List<Debt> findAllByOrderByCreatedAtAsc();
+    /**
+     * Every debt for the ledger, with both members and the cycle loaded. Two joins
+     * back to member, because a debt names a debtor and a creditor — Rule 2's
+     * "not the group in the abstract".
+     */
+    @Query("SELECT d FROM Debt d "
+            + "JOIN FETCH d.debtor "
+            + "JOIN FETCH d.creditor "
+            + "JOIN FETCH d.cycle "
+            + "ORDER BY d.createdAt ASC, d.id ASC")
+    List<Debt> findAllForLedger();
 
     /**
      * One member's debts, oldest first — the order Rule 7 settles them in.

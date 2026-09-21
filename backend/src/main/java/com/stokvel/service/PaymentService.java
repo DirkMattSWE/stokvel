@@ -13,6 +13,7 @@ import com.stokvel.repository.MemberRepository;
 import com.stokvel.repository.PaymentRepository;
 import com.stokvel.repository.StokvelConfigRepository;
 import com.stokvel.service.ArrearsService.OutstandingDebt;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,19 +47,22 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final AllocationRepository allocationRepository;
     private final ArrearsService arrearsService;
+    private final LedgerBroadcaster broadcaster;
 
     public PaymentService(StokvelConfigRepository configRepository,
                           MemberRepository memberRepository,
                           CycleRepository cycleRepository,
                           PaymentRepository paymentRepository,
                           AllocationRepository allocationRepository,
-                          ArrearsService arrearsService) {
+                          ArrearsService arrearsService,
+                          LedgerBroadcaster broadcaster) {
         this.configRepository = configRepository;
         this.memberRepository = memberRepository;
         this.cycleRepository = cycleRepository;
         this.paymentRepository = paymentRepository;
         this.allocationRepository = allocationRepository;
         this.arrearsService = arrearsService;
+        this.broadcaster = broadcaster;
     }
 
     /** A payment and every slice of it, with debt and creditor already loaded. */
@@ -103,6 +107,14 @@ public class PaymentService {
             allocate(payment, pot, null, remainder);
         }
 
+
+        // Broadcast at the outermost mutating method, not at every one.
+        // recordArrearsDeduction and firePayout are only ever reached from inside
+        // another service's transaction, so pushing from there would send clients a
+        // half-finished picture — debts written but no payout yet — and then replace
+        // it a moment later. One push per user action is fewer messages and a state
+        // that was never incoherent.
+        broadcaster.broadcast();
         return new RecordedPayment(payment, allocationRepository.findByPaymentId(payment.getId()));
     }
 

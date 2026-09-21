@@ -57,4 +57,17 @@ public interface AllocationRepository extends JpaRepository<Allocation, Long> {
             + "WHERE a.payment.id = :paymentId "
             + "ORDER BY a.id ASC")
     List<Allocation> findByPaymentId(@Param("paymentId") Long paymentId);
+
+    /**
+     * Every allocation, for the ledger to group under its payment. One query for all
+     * of them rather than findByPaymentId per payment — the ledger renders every
+     * payment there has ever been, so the per-payment version would be N+1 by
+     * construction.
+     */
+    @Query("SELECT a FROM Allocation a "
+            + "LEFT JOIN FETCH a.cycle "
+            + "LEFT JOIN FETCH a.debt d "
+            + "LEFT JOIN FETCH d.creditor "
+            + "ORDER BY a.id ASC")
+    List<Allocation> findAllForLedger();
 }

@@ -7,11 +7,13 @@ import com.stokvel.repository.MemberRepository;
 import com.stokvel.repository.PayoutRepository;
 import com.stokvel.repository.StokvelConfigRepository;
 import com.stokvel.service.PayoutService.PayoutOutcome;
+import com.stokvel.websocket.LedgerBroadcaster;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.jdbc.Sql;
 
 import java.math.BigDecimal;
@@ -50,6 +52,14 @@ class ClockServiceTest {
     private static final LocalDate CYCLE_1_DUE = LocalDate.of(2020, 2, 29);
     private static final LocalDate CYCLE_2_DUE = LocalDate.of(2020, 3, 31);
     private static final LocalDate CYCLE_3_DUE = LocalDate.of(2020, 4, 30);
+
+    /**
+     * Transport, not a rule — mocked rather than wired. The services call it at the
+     * end of a mutating method; what it sends is LedgerService's job and is tested
+     * there, and a STOMP broker has no business inside a @DataJpaTest.
+     */
+    @MockitoBean
+    private LedgerBroadcaster broadcaster;
 
     @Autowired
     private ClockService clockService;
