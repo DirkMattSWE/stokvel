@@ -143,19 +143,9 @@ button:disabled {
 /* ---- panel grid ---- */
 
 .panels {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-}
-
-.panel-ledger {
-  grid-column: 1 / -1;
-}
-
-@media (max-width: 720px) {
-  .panels {
-    grid-template-columns: 1fr;
-  }
 }
 
 .panel {
@@ -194,6 +184,43 @@ button:disabled {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   width: 20px;
+}
+
+.member-name {
+  flex: 1;
+}
+
+.member-pay-button {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+/* ---- modal overlay ---- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 23, 26, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 10;
+}
+
+.modal {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  box-shadow: var(--shadow);
+  max-width: 320px;
+  width: 100%;
+}
+
+.modal h3 {
+  font-size: 16px;
+  margin: 0 0 14px;
 }
 
 /* ---- cycles ---- */

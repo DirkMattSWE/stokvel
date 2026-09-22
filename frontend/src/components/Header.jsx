@@ -6,23 +6,32 @@
 // error state to hide, it's the signal to show the create form in this same
 // slot instead. No separate "setup mode" flag anywhere; the presence of
 // `config` IS the mode.
-function Header({ config }) {
+function Header({ config, onCreateStokvel }) {
   if (!config) {
+    function handleSubmit(event) {
+      event.preventDefault()
+      const form = event.target
+      const contributionAmount = Number(form.contributionAmount.value)
+      const startDate = form.startDate.value
+      const rotationCount = Number(form.rotationCount.value)
+      onCreateStokvel(contributionAmount, startDate, rotationCount)
+    }
+
     return (
       <header className="app-header">
         <h1>Set up your stokvel</h1>
-        <form className="setup-form">
+        <form className="setup-form" onSubmit={handleSubmit}>
           <label>
             Contribution amount
-            <input type="number" name="contributionAmount" />
+            <input type="number" name="contributionAmount" min="0.01" step="0.01" required />
           </label>
           <label>
             Start date
-            <input type="date" name="startDate" />
+            <input type="date" name="startDate" required />
           </label>
           <label>
             Rotation count
-            <input type="number" name="rotationCount" />
+            <input type="number" name="rotationCount" defaultValue={1} min="1" required />
           </label>
           <button type="submit">Create</button>
         </form>

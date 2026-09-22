@@ -29,3 +29,52 @@ export async function apiFetch(path, options = {}) {
 
   return response.json()
 }
+
+// One named function per backend endpoint, each a thin call to apiFetch.
+// Field names match the DTOs' record components exactly — Jackson
+// serializes/deserializes Java records by accessor name, so contributionAmount,
+// startDate, memberId etc. below are not a convention, they're the wire format.
+
+export function fetchClock() {
+  return apiFetch('/clock')
+}
+
+export function advanceClock(targetDate) {
+  return apiFetch('/clock/advance', {
+    method: 'POST',
+    body: JSON.stringify({ targetDate }),
+  })
+}
+
+export function createStokvel(contributionAmount, startDate, rotationCount) {
+  return apiFetch('/setup/stokvel', {
+    method: 'POST',
+    body: JSON.stringify({ contributionAmount, startDate, rotationCount }),
+  })
+}
+
+export function fetchMembers() {
+  return apiFetch('/setup/members')
+}
+
+export function addMember(name) {
+  return apiFetch('/setup/members', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export function recordPayment(memberId, amount) {
+  return apiFetch('/payments', {
+    method: 'POST',
+    body: JSON.stringify({ memberId, amount }),
+  })
+}
+
+export function fetchCycles() {
+  return apiFetch('/cycles')
+}
+
+export function fetchLedger() {
+  return apiFetch('/ledger')
+}
