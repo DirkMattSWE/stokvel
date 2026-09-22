@@ -1001,15 +1001,39 @@ oversights; each is recorded so it gets decided rather than assumed.
 **Pass 6 is unreviewed from the Rule 3 boundary onward — flagged 2026-09-22.** The
 author was in the loop through `BuyinService` itself; the session then ran unattended
 across a usage-limit outage, and everything written after it has not been read by
-anyone. That is a statement about review coverage, not about the code — the suite is
+anyone. The first item below was read on 2026-09-22 and is struck through; the other
+three still stand. That is a statement about review coverage, not about the code — the suite is
 green and the reasoning is recorded above — but this build is judged on the author
 being able to account for every decision, so the unread parts are named here rather
 than assumed safe:
 
-- **`ArrearsService.wasLiableFor` / `windowOpenedFor` and the matching pair in
-  `CycleService`.** The most consequential edit in the pass: it moves who takes a debt
-  row, not just a display figure. The first-cycle fallback (`dueDate.minusDays(1)`) is
-  the part to argue with.
+- **~~`ArrearsService.wasLiableFor` / `windowOpenedFor`~~ — read 2026-09-22.** The
+  most consequential edit in the pass: it moves who takes a debt row, not just a
+  display figure. Two things came out of reading it, neither fixed yet.
+
+  **The first-cycle fallback's stated reason does not survive this pass's own
+  widening of Rule 4.** Both the method comment and the Rule 3 text justify
+  `dueDate.minusDays(1)` with "before the first payout nobody has received anything,
+  so there is nobody a buy-in could compensate." But Rule 4 was widened here
+  *precisely because* the in-progress cycle's recipient counts before their payout
+  fires — and for cycle 1 that is exactly the member in question. The conclusion
+  still holds, for a different reason: under the fallback the joiner **contributes**
+  to cycle 1, so its pot is sized for the full rotation and the gap never opens.
+
+  The defence that actually works is narrower and worth having ready, because this is
+  the obvious thing to be asked. `minusDays(1)` is the only option that keeps the
+  test a single comparison and invents no dates: `MIN(member.created_at)` breaks the
+  founding case it exists for (the second founder added a day later is after the
+  minimum, so they get charged a buy-in for joining their own stokvel),
+  `minusMonths(1)` puts calendar arithmetic back in a second place, and there is no
+  stored start date because `current_date` moves (Rule 8). Not "right on the merits"
+  so much as the least wrong of the representable options.
+
+  **The cost to concede:** it opens a month-long free-entry window on cycle 1 where
+  liability is full. Created 1 January with cycle 1 due the 31st, a member joining on
+  the 30th owes a contribution the next day and takes a debt row if they do not pay
+  it — the exact thing the boundary protects mid-cycle joiners from everywhere else.
+  A thirty-day exposure bought to fix a two-day founding problem.
 - **`StokvelSetupService.addMember`** — the buy-in call site and the conditional
   broadcast.
 - **`LedgerService`** — the `BUYIN` type, the rank renumbering that came with it, and
@@ -1155,8 +1179,23 @@ controller looping to fetch each pot, which is N+1 driven from transport.
   comment says a drifting target "would contradict the debt rows, which are written
   from the very same boundary" — which is a reason to *want* them to agree. Left
   duplicated deliberately; flagged as the thing to merge first if a third caller
-  ever needs it. `BuyinService` is not that caller — it asks which cycles are a
-  prefix, not whether one member is liable.
+  ever needs it.
+
+  **The third caller already exists — corrected 2026-09-22.** This read
+  "`BuyinService` is not that caller — it asks which cycles are a prefix, not whether
+  one member is liable." That is not what the code does. `BuyinService.missedCycles`
+  compares each cycle's window against the joiner's join date one cycle at a time,
+  through its own `windowOpened` helper carrying its own `minusDays(1)` fallback —
+  the same rule as `ArrearsService`, differing only in being fed a list and an index
+  instead of running a query. Prefix-ness is a *property* of the answer (due dates
+  increase along a rotation, so the missed cycles are the leading run); it is not how
+  the answer is computed.
+
+  So there are three copies of a rule with a special case, and the condition this
+  note set for merging was met by the same pass that wrote the note. Nothing is
+  broken by it — the three agree today. The decision is live rather than hypothetical
+  now, and the honest framing is that it was deferred once and should be decided on
+  purpose the next time any of the three is touched.
 
 Seven tests. The two that carry weight are
 `a_cycles_target_counts_only_the_members_who_were_liable_for_it` — Erik joins 15
