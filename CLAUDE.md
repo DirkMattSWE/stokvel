@@ -858,6 +858,28 @@ edge cases are part of the design rather than a check on it.
    is also the better ledger: grouping a payout with the deduction that came out of it
    is how Rule 6 is explained.
 
+   **Revisited 2026-09-22 during hands-on QA, and closed — the ledger looked "all
+   wacky" for a reason that is not the ordering.** Manual testing was being done
+   entirely on one simulated day: pay, add a member, pay again, never advancing
+   between actions. Every row therefore carried a byte-identical `created_at` and the
+   rank was doing *all* of the ordering, which is the one condition under which it is
+   visibly wrong. The sharpest example it produced: a payment settling a debt sorted
+   *above* the `DEBT` line for the debt it settled, because `PAYMENT` outranks `DEBT`.
+
+   Two things worth stating plainly, because both were re-derived the hard way:
+   the sort is already `comparing(at).thenComparingInt(rank)` — **date first, rank
+   only as a same-day tiebreak**, which is what one would design if starting over;
+   and there is no wall-clock timestamp anywhere to fall back on, because every
+   `created_at` in the system comes from `simulatedNow()` (`PaymentService:98,138`,
+   `PayoutService:152`, `BuyinService:131`, `StokvelSetupService:136`). The rank is
+   standing in for information that was never recorded, not overriding information
+   that was. A pay → advance → pay flow sorts chronologically with no rank involved.
+
+   Left as built. The fix would be the monotonic sequence column already rejected
+   above, and it is still the wrong trade — a schema change across four tables, their
+   constructors, every insert site and the tests that build them, to correct a display
+   artefact of testing in a way the product is not used.
+
    **`LedgerEntry` crosses the wire as itself — there is no `LedgerResponse`.** It
    carries no JPA entities, only strings, amounts and an instant, so it is already the
    wire shape and a copy under another name would be ceremony. The DTO rule exists to
@@ -925,7 +947,29 @@ edge cases are part of the design rather than a check on it.
    assertion says "R1,000 was distributed"; only that total says it was the *right*
    R1,000. `buy_in_money_never_reaches_a_pot` is the other one: R1,000 changes hands
    and no pot moves.
-7. **Polish** — legible from the back of the room.
+7. **Polish** — legible from the back of the room. **Partly done 2026-09-22, commit
+   `1b1fe4a`** — three display gaps found by using the app rather than reading it,
+   all frontend, no logic touched:
+   - **Every ledger line shows its date.** `Intl.DateTimeFormat` at module scope in
+     `Ledger.jsx`, with **`timeZone: 'UTC'`, which is load-bearing, not tidiness** —
+     `created_at` is `simulatedNow()`, the business date at *midnight UTC*, so the
+     browser's local zone renders 01 Oct as 30 Sep anywhere west of Greenwich. The
+     same failure mode as the `date_class=text` note under *SQLite specifics*,
+     arriving at the other end of the wire.
+   - **One colour per `EntryType`**, light and dark. Only DEBT and DEDUCTION had ever
+     been styled, so `BUYIN` was indistinguishable from an ordinary payment — the
+     rule with the most explaining to do was the one the eye slid over. DEDUCTION now
+     reads apart from DEBT as well: money taken off a payout is not an obligation
+     being created.
+   - **Cycle rows carry their rotation number.** `cycle.rotationNumber` was already
+     on the wire and unused, so "#1 · Dirk" and "#4 · Dirk" read as a duplicated row
+     rather than the same member's turn in the next rotation.
+
+   Still open under item 7: the payment form should prefill and cap at the maximum
+   payable (see *Overpayment is refused*, below), and `addMember` still does not
+   broadcast for a founding member, so a second browser window needs a manual reload
+   to see one appear. That last one is the documented behaviour, not a regression —
+   the question is whether "one push per user action" should now mean every add.
 
 **Dependency direction, one way, no cycles:**
 `ClockService → PayoutService → PaymentService → ArrearsService`, all over the
@@ -968,6 +1012,16 @@ the backend allows a cross-origin request, so a `fetch` from Vite on :5173 to Sp
 `@CrossOrigin` annotation would be production configuration that exists only to serve a
 dev-time port split, and it would still be in the code when the two are served from one
 origin.
+
+**`vite.config.js` also needs `define: { global: 'globalThis' }`, and the failure it
+prevents is worth knowing.** `sockjs-client` — which `@stomp/stompjs` uses for the
+`/ws` fallback transport — references the bare Node global `global` at *module load
+time*. The browser has no such global, so importing it throws
+`ReferenceError: global is not defined` before React ever mounts: the page paints its
+background and CSS and nothing else, with no network error and no failed request to
+point at. It looks exactly like a broken component, which is where the time goes.
+Vite watches its own config file and restarts itself, so the fix needs no manual
+server restart.
 
 **One `refresh()`, called from everywhere.** The server owns state and clients
 re-render from what they are given, so the client should hold no derived value and
@@ -1088,6 +1142,35 @@ so the test needs a different way to produce a `paid > expected` comparison, or 
 floor gets asserted at the record level instead. The floor in `CycleShortfall` stays
 either way: it is cheap, and it is the kind of guard that should not depend on another
 service continuing to refuse things.
+
+**Still unimplemented as of 2026-09-22, and confirmed still wanted** — it was
+rediscovered from the other direction, by paying an absurd amount into the running app
+and watching it land in the pot. What reading `recordPayment` settles before the work
+starts:
+
+- **The refusal has everything it needs already in scope.** `recordPayment`
+  (`PaymentService.java:84`) loads `cycleRepository.findOpenCycle()` at line 90 and
+  `arrearsService.outstandingFor(member)` at line 91, *before* it writes anything. The
+  check belongs at ~line 92, beside the existing "every cycle has paid out and this
+  member owes nothing" guard, and needs no new dependency for the arrears half.
+  `OutstandingDebt` already exposes `.outstanding()` (see `settleDebts`, 157–168).
+- **Lines 101–108 are the behaviour being replaced** — `remainder > 0` allocating the
+  excess into the open cycle's pot.
+- **Refuse in the style already there:** `IllegalArgumentException` for malformed
+  input (`requireMoney`, line 197), `IllegalStateException` for a business-state
+  refusal (lines 93, 105, 142). The `@RestControllerAdvice` maps those to 400 and 409,
+  so the frontend surfaces the sentence unchanged.
+- **The one open question: what the member has already put into the open cycle.** That
+  is the "what is left of this cycle's contribution" half, and it needs
+  `SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?`. This file's older
+  note said no such query existed, but that was written before pass 3a built
+  `ArrearsService.shortfallsFor(cycle)`, which cannot compute expected-vs-actual
+  without it — so it likely exists now, possibly shaped per-cycle (`GROUP BY`) rather
+  than per-member. **Check `AllocationRepository` before writing a new one.**
+- **The frontend half is the point of the rule, not a garnish.** Prefill the payment
+  modal's amount with the maximum payable and cap the input there, so the member
+  types *down* from what they owe rather than guessing upward into a refusal.
+  `GET /api/cycles/{id}/shortfalls` is the likely source; confirm its DTO shape first.
 
 **~~Buy-in scope~~ — settled 2026-09-21, the author's call, and it was right.** Rule 4 as
 written compensates *already-paid* members for the gap between the pot they received
