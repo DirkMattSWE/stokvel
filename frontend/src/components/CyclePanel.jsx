@@ -17,6 +17,7 @@ function CyclePanel({ cycles }) {
             <div className="cycle-row" key={state.cycle.id}>
               <div className="cycle-label">
                 <span className="recipient">
+                  <span className="rotation-tag">Rotation {state.cycle.rotationNumber}</span>
                   #{state.cycle.sequenceNumber} · {state.cycle.recipientName}
                 </span>
                 <span className="amounts">

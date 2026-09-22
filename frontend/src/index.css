@@ -9,6 +9,12 @@
   --accent-bg: #e6f4ee;
   --danger: #b3441e;
   --danger-bg: #fbece4;
+  --buyin: #2563a8;
+  --buyin-bg: #e4eefb;
+  --payout: #8a6410;
+  --payout-bg: #fbf1dc;
+  --deduction: #6b46a8;
+  --deduction-bg: #efe8fa;
   --shadow: rgba(20, 23, 26, 0.06) 0 1px 3px, rgba(20, 23, 26, 0.04) 0 1px 2px;
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
@@ -29,6 +35,12 @@
     --accent-bg: rgba(95, 185, 140, 0.14);
     --danger: #e08a63;
     --danger-bg: rgba(224, 138, 99, 0.14);
+    --buyin: #6aa9e8;
+    --buyin-bg: rgba(106, 169, 232, 0.16);
+    --payout: #d6a848;
+    --payout-bg: rgba(214, 168, 72, 0.16);
+    --deduction: #a98ae0;
+    --deduction-bg: rgba(169, 138, 224, 0.16);
     --shadow: rgba(0, 0, 0, 0.4) 0 1px 3px, rgba(0, 0, 0, 0.3) 0 1px 2px;
   }
 }
@@ -246,6 +258,23 @@ button:disabled {
 .cycle-label .recipient {
   color: var(--text-h);
   font-weight: 500;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* A member recurs once per rotation, so "#1 Dirk" and "#4 Dirk" are different
+   rounds, not a duplicate row. rotation_number is already on the wire. */
+.rotation-tag {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
 }
 
 .cycle-label .amounts {
@@ -305,10 +334,42 @@ button:disabled {
   color: var(--accent);
 }
 
-.ledger-type.DEBT,
-.ledger-type.DEDUCTION {
+/* One colour per fact the ledger can record, so the type is readable before the
+   text is. DEDUCTION shares DEBT's family (both are arrears) but is not the same
+   colour — it is money taken off a payout, not an obligation being created. */
+.ledger-type.PAYMENT {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.ledger-type.BUYIN {
+  background: var(--buyin-bg);
+  color: var(--buyin);
+}
+
+.ledger-type.DEBT {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+.ledger-type.PAYOUT {
+  background: var(--payout-bg);
+  color: var(--payout);
+}
+
+.ledger-type.DEDUCTION {
+  background: var(--deduction-bg);
+  color: var(--deduction);
+}
+
+/* Business date, not wall-clock: every created_at is simulatedNow(), the
+   simulated date at midnight UTC. Formatted in UTC for that reason — a local
+   timezone would shift midnight backwards a day in any UTC-negative offset. */
+.ledger-date {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .ledger-amount {

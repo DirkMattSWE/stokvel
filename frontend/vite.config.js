@@ -4,6 +4,14 @@ import { defineConfig } from 'vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // sockjs-client (used by @stomp/stompjs for the /ws fallback transport)
+  // references the bare Node global `global` at module load time. The
+  // browser has no such global, so without this define the import throws
+  // "global is not defined" as soon as App.jsx loads it — before React ever
+  // renders anything.
+  define: {
+    global: 'globalThis',
+  },
   server: {
     proxy: {
       // Forwards anything the browser requests at /api/... to Spring Boot on
