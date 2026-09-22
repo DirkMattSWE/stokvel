@@ -1,121 +1,70 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import Header from './components/Header.jsx'
+import MemberPanel from './components/MemberPanel.jsx'
+import CyclePanel from './components/CyclePanel.jsx'
+import Ledger from './components/Ledger.jsx'
+
+// F2: hardcoded data, matching the walkthrough's fixture (docs/walkthrough.md
+// §1.1) — R500 contribution, three members, one rotation, clock at
+// 2026-01-15. No network calls yet; App just owns this data and hands it
+// down. In F3 these four consts get replaced by real fetches — nothing in
+// the four components below has to change when that happens.
+
+const config = {
+  contributionAmount: 500,
+  currentDate: '2026-01-15',
+  rotationCount: 1,
+}
+
+const members = [
+  { id: 1, name: 'John' },
+  { id: 2, name: 'Sarah' },
+  { id: 3, name: 'Thabo' },
+]
+
+const cycles = [
+  {
+    cycle: { id: 1, sequenceNumber: 1, recipientName: 'John', dueDate: '2026-01-31' },
+    collected: 500,
+    target: 1500,
+    shortfall: 1000,
+  },
+  {
+    cycle: { id: 2, sequenceNumber: 2, recipientName: 'Sarah', dueDate: '2026-02-28' },
+    collected: 0,
+    target: 1500,
+    shortfall: 1500,
+  },
+  {
+    cycle: { id: 3, sequenceNumber: 3, recipientName: 'Thabo', dueDate: '2026-03-31' },
+    collected: 0,
+    target: 1500,
+    shortfall: 1500,
+  },
+]
+
+const ledger = [
+  {
+    at: '2026-01-15T00:00:00Z',
+    type: 'PAYMENT',
+    member: 'John',
+    counterparty: null,
+    amount: 500,
+    cycleSequenceNumber: 1,
+    description: 'John paid R500',
+    slices: [{ amount: 500, destination: 'cycle 1 pot' }],
+  },
+]
 
 function App() {
-  const [count, setCount] = useState(0)
-
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+    <div className="app-shell">
+      <Header config={config} />
+      <div className="panels">
+        <MemberPanel members={members} />
+        <CyclePanel cycles={cycles} />
+        <Ledger entries={ledger} />
+      </div>
+    </div>
   )
 }
 
