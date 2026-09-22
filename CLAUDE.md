@@ -946,6 +946,46 @@ cycles did not exist yet at that moment — so if the same advance was large eno
 make one of *those* due, the only place to catch it is inside the payout call that
 closed the previous rotation.
 
+## Wiring the frontend — item 7
+
+The backend's whole surface, so the React pass does not have to go looking:
+
+| Call | What it is for |
+|---|---|
+| `POST /api/setup/stokvel` | contribution, start date, rotation count — once |
+| `GET`/`POST /api/setup/members` | list in rotation order; add one (may return a buy-in) |
+| `POST /api/payments` | a member pays |
+| `GET /api/clock` · `POST /api/clock/advance` | read the simulated date; move it |
+| `GET /api/cycles` | whose turn, pot vs target — *state right now* |
+| `GET /api/ledger` | initial load only — *what happened, in order* |
+| `GET /api/members/{id}/arrears` · `GET /api/cycles/{id}/shortfalls` | who owes what |
+| STOMP `/ws` → `/topic/ledger` | the push, SockJS-wrapped |
+
+**CORS is not configured, and that is deliberate — use Vite's dev proxy.** Nothing in
+the backend allows a cross-origin request, so a `fetch` from Vite on :5173 to Spring on
+:8080 fails before it arrives. The fix is `server.proxy` in `vite.config.js` (with
+`ws: true`, which covers the SockJS endpoint too), not a CORS config class. A
+`@CrossOrigin` annotation would be production configuration that exists only to serve a
+dev-time port split, and it would still be in the code when the two are served from one
+origin.
+
+**One `refresh()`, called from everywhere.** The server owns state and clients
+re-render from what they are given, so the client should hold no derived value and
+merge nothing. Re-fetch cycles, clock and members together; the ledger arrives pushed.
+
+**Two things the push does not cover.** `addMember` broadcasts only when a buy-in was
+written, so adding a founding member needs an explicit refresh. And nothing broadcasts
+`GET /api/cycles`, which changes on every payment and payout — so the ledger push
+should trigger the same `refresh()` rather than only replacing the ledger.
+
+**Build it polling-first, then move the trigger to the socket.** The socket is the one
+piece that can fail silently, and if it is load-bearing from the first minute there is
+no way to tell a wiring bug from a transport one. With a single `refresh()` the swap is
+a two-line change, and the app that results is the more honest one anyway: real-time
+removes the delay, it does not supply the state.
+
+---
+
 ## Out of scope
 
 Auth, mobile responsiveness, real money/EFT/payment gateways, email/SMS/push,
@@ -957,6 +997,25 @@ background scheduler (the clock control does that job).
 
 Decisions deliberately left until the code that forces them exists. None are
 oversights; each is recorded so it gets decided rather than assumed.
+
+**Pass 6 is unreviewed from the Rule 3 boundary onward — flagged 2026-09-22.** The
+author was in the loop through `BuyinService` itself; the session then ran unattended
+across a usage-limit outage, and everything written after it has not been read by
+anyone. That is a statement about review coverage, not about the code — the suite is
+green and the reasoning is recorded above — but this build is judged on the author
+being able to account for every decision, so the unread parts are named here rather
+than assumed safe:
+
+- **`ArrearsService.wasLiableFor` / `windowOpenedFor` and the matching pair in
+  `CycleService`.** The most consequential edit in the pass: it moves who takes a debt
+  row, not just a display figure. The first-cycle fallback (`dueDate.minusDays(1)`) is
+  the part to argue with.
+- **`StokvelSetupService.addMember`** — the buy-in call site and the conditional
+  broadcast.
+- **`LedgerService`** — the `BUYIN` type, the rank renumbering that came with it, and
+  the two new queries.
+- **`BuyinServiceTest`** — in particular whether the conservation test proves what it
+  claims, since it is the assertion the whole rule rests on.
 
 **~~`StokvelConfigRepository`~~ — settled.** Added as a thin
 `JpaRepository<StokvelConfig, Long>`, forced by `createStokvel()` needing to write the
