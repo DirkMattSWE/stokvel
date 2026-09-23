@@ -966,7 +966,8 @@ edge cases are part of the design rather than a check on it.
      rather than the same member's turn in the next rotation.
 
    Still open under item 7: the payment form should prefill and cap at the maximum
-   payable (see *Overpayment is refused*, below), and `addMember` still does not
+   payable (backend built 2026-09-23, frontend pending — see *Overpayment is
+   refused*, below), and `addMember` still does not
    broadcast for a founding member, so a second browser window needs a manual reload
    to see one appear. That last one is the documented behaviour, not a regression —
    the question is whether "one push per user action" should now mean every add.
@@ -1115,10 +1116,46 @@ the spec describes (expected vs actual, per member per cycle), which needs
 member for a cycle, or a DTO with both sides. **Build-order pass 3a is where that gets
 answered** — Rule 2 cannot write a debt row without first asking who was short.
 
-**Overpayment is refused — decided 2026-09-21, not yet implemented.** There was no
-rule for a member paying more than they owe, and the current behaviour is that the
-whole excess lands in the open cycle's pot: R700 against a R500 contribution makes
-that month's recipient R200 better off, and the payer still owes R500 next month.
+**Overpayment is refused — decided 2026-09-21, backend built 2026-09-23.** There was
+no rule for a member paying more than they owe, and the old behaviour was that the
+whole excess landed in the open cycle's pot: R700 against a R500 contribution made
+that month's recipient R200 better off, and the payer still owed R500 next month.
+
+**What was built — 2026-09-23, suite at 89.** The author mapped it as two methods:
+arrears remaining in `ArrearsService`, plus the contribution less what the member
+already paid into the open cycle, calculated in `PaymentService`. Three corrections
+came out of the design conversation:
+
+- **The arrears half already existed** — `totalOutstandingFor`. `PaymentService` sums
+  the `owed` list `recordPayment` has already loaded rather than querying it twice.
+- **The contribution half needs Rule 3's liability check.** "Contribution minus what
+  they paid" lets a mid-cycle joiner pay R500 into the round their buy-in already
+  covered — the pot inflation the buy-in note forbids. So it is
+  `ArrearsService.contributionDueFor(cycle, member)`: zero if not liable, otherwise
+  the `CycleShortfall` for that one member. Same boundary and same sum as the debt
+  rows, so the cap and the debt a member would earn for not paying cannot disagree.
+  It reuses `ArrearsService`'s `wasLiableFor` — no fourth copy.
+- **The refusal lives in `recordPayment`, not only the endpoint.** A cap enforced only
+  on an input box is a suggestion. The public `maxPayable(Long memberId)` (lookup,
+  for HTTP) and `recordPayment` both call the private `calculateMaxPayable(member,
+  openCycle, owed)` — one arithmetic, two entry points, the same split as
+  `arrearsFor(Long)` / `outstandingFor(Member)`. Private so no caller can hand it a
+  debt list of its own making.
+
+`GET /api/payments/max/{memberId}` returns `MaxPayableResponse(memberId, arrears,
+contributionDue, maxPayable)`. Over the cap is a 409 naming the maximum; owing
+nothing is a 409 saying so. No credit: a paid-up member cannot prepay the next cycle
+until it opens.
+
+`PaymentServiceMaxPayableTest`, nine tests. The one that matters is
+`money_swallowed_by_arrears_does_not_count_towards_the_contribution` — it fails the
+moment the cap is derived from `payment.amount` instead of allocations.
+`PayoutServiceDebtTest.overpaying_…` became
+`overpaying_is_refused_and_the_comparison_is_still_floored_at_zero`, asserting the
+floor on the record. **The frontend half — prefill and `max` on the payment modal —
+is what remains.**
+
+*The design notes below are kept for the reasoning.*
 
 The author's call is that `recordPayment` should refuse instead. A member can pay at
 most **outstanding arrears + what is left of this cycle's contribution**, and anything
@@ -1160,17 +1197,41 @@ starts:
   input (`requireMoney`, line 197), `IllegalStateException` for a business-state
   refusal (lines 93, 105, 142). The `@RestControllerAdvice` maps those to 400 and 409,
   so the frontend surfaces the sentence unchanged.
-- **The one open question: what the member has already put into the open cycle.** That
-  is the "what is left of this cycle's contribution" half, and it needs
-  `SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?`. This file's older
-  note said no such query existed, but that was written before pass 3a built
-  `ArrearsService.shortfallsFor(cycle)`, which cannot compute expected-vs-actual
-  without it — so it likely exists now, possibly shaped per-cycle (`GROUP BY`) rather
-  than per-member. **Check `AllocationRepository` before writing a new one.**
+- **~~The one open question: what the member has already put into the open cycle.~~ —
+  checked 2026-09-22, the query already exists.** `AllocationRepository
+  .sumByCycleIdAndMemberId(cycleId, memberId)` (`AllocationRepository.java:39`) is
+  exactly `SUM(a.amount) WHERE a.cycle.id = ? AND a.payment.member.id = ?`, written
+  for pass 3a's expected-vs-actual comparison and per-member rather than `GROUP BY`.
+  Its own comment already makes the argument the cap depends on: it sums
+  *allocations*, not payments, so a member who handed over R500 against R400 of
+  arrears counts as having put R100 into this cycle. Summing `payment.amount` would
+  treat them as paid up and cap them at zero while they still owe a full
+  contribution. **Nothing new to write — the backend refusal needs no new query and
+  no new dependency.**
 - **The frontend half is the point of the rule, not a garnish.** Prefill the payment
   modal's amount with the maximum payable and cap the input there, so the member
-  types *down* from what they owe rather than guessing upward into a refusal.
-  `GET /api/cycles/{id}/shortfalls` is the likely source; confirm its DTO shape first.
+  types *down* from what they owe rather than guessing upward into a refusal. The
+  edit is `MemberPanel.jsx:68–77`, the existing payment modal.
+
+  **DTO shape confirmed 2026-09-22, and it does not carry the whole answer.**
+  `GET /api/cycles/{id}/shortfalls` returns
+  `CycleShortfallResponse(memberId, memberName, expected, paid, shortfall)` — the
+  *contribution* half only. Max payable is **outstanding arrears + (expected −
+  paid)**, and nothing on that DTO knows about arrears; the other half is a second
+  call to `GET /api/members/{id}/arrears`.
+
+  **So the first decision of the pass is where max payable is computed, not how the
+  input is capped.** Two calls lined up in the client, or one number derived
+  server-side beside the refusal that already has both halves in scope. The second
+  is the one consistent with everything else here — the client holds no derived
+  value and the refusal and the prefill would then be the same arithmetic in one
+  place rather than two that can disagree. Decide it out loud first; the input cap
+  is twenty lines once the number exists.
+- **Order of work: backend first, and not by preference.** The frontend has nothing
+  to prefill or cap against until the max payable exists, so the small half cannot
+  go first. Budget the pass for the design conversation plus
+  `PayoutServiceDebtTest.overpaying_writes_no_row_and_no_negative_debt` needing
+  rework — it pays R700 to reach the shortfall floor, which the new rule refuses.
 
 **~~Buy-in scope~~ — settled 2026-09-21, the author's call, and it was right.** Rule 4 as
 written compensates *already-paid* members for the gap between the pot they received

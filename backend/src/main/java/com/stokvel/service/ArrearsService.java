@@ -101,9 +101,10 @@ public class ArrearsService {
     public record CycleShortfall(Member member, BigDecimal expected, BigDecimal paid) {
 
         /**
-         * Floored at zero because paid can legitimately exceed expected: a member
-         * who overpays has the excess allocated to the open cycle, so their side of
-         * the comparison comes back high. That is not a negative debt.
+         * Floored at zero so paid exceeding expected is never a negative debt.
+         * PaymentService refuses overpayment now, so this should not arise — the
+         * floor stays because a guard against a negative debt row should not depend
+         * on another service continuing to refuse things.
          */
         public BigDecimal shortfall() {
             return expected.subtract(paid).max(BigDecimal.ZERO);
@@ -149,6 +150,25 @@ public class ArrearsService {
             comparison.add(new CycleShortfall(member, expected, paid));
         }
         return comparison;
+    }
+
+    /**
+     * What this member still owes this one cycle's pot: zero if they were never
+     * liable for it (Rule 3), otherwise the contribution less what already reached
+     * the pot. The contribution half of what a member may pay.
+     *
+     * Same boundary and same sum as shortfallsFor, deliberately — a member's cap
+     * that disagreed with the debt row they would earn for not paying would be two
+     * answers to one question.
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal contributionDueFor(Cycle cycle, Member member) {
+        if (!wasLiableFor(windowOpenedFor(cycle), member)) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal expected = configRepository.require().getContributionAmount();
+        BigDecimal paid = allocationRepository.sumByCycleIdAndMemberId(cycle.getId(), member.getId());
+        return new CycleShortfall(member, expected, paid).shortfall();
     }
 
     /**

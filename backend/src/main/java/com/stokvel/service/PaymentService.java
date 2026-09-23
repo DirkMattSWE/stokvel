@@ -70,10 +70,10 @@ public class PaymentService {
     }
 
     /**
-     * A member pays. The amount is whatever they actually paid — the full
-     * contribution, part of it, or more than it. Nothing here compares against
-     * contribution_amount: paying short is not refused at the door, it becomes a
-     * debt row when the cycle's due date arrives and the pot is counted (Rule 2).
+     * A member pays. The amount is whatever they actually paid, up to what they owe
+     * right now (see {@link MaxPayable}) — anything above that is refused, not
+     * potted. Paying short is not refused at the door: it becomes a debt row when
+     * the cycle's due date arrives and the pot is counted (Rule 2).
      *
      * Rule 7 in order: what they owe is settled first, oldest debt first, and what
      * survives that goes to the open cycle's pot.
@@ -89,22 +89,23 @@ public class PaymentService {
 
         Optional<Cycle> openCycle = cycleRepository.findOpenCycle();
         List<OutstandingDebt> owed = arrearsService.outstandingFor(member);
-        if (openCycle.isEmpty() && owed.isEmpty()) {
-            throw new IllegalStateException(
-                    "Every cycle has paid out and this member owes nothing — there is nothing to pay into.");
+        BigDecimal max = calculateMaxPayable(member, openCycle, owed).total();
+        if (max.signum() == 0) {
+            throw new IllegalStateException(member.getName() + " owes nothing right now — there is nothing to pay.");
+        }
+        if (amount.compareTo(max) > 0) {
+            throw new IllegalStateException("That is more than " + member.getName() + " owes: at most R"
+                    + max.toPlainString() + " can be paid right now.");
         }
 
         Payment payment = paymentRepository.save(
                 new Payment(member, amount, null, config.simulatedNow()));
 
+        // After the cap, a remainder can only be what is left of this cycle's
+        // contribution, so an open cycle the member is liable for exists.
         BigDecimal remainder = settleDebts(payment, owed, amount);
         if (remainder.signum() > 0) {
-            // A rotation that has closed has no pot left to hold the excess. Refusing
-            // is the honest answer: the alternative is accepting money the system
-            // cannot say the destination of.
-            Cycle pot = openCycle.orElseThrow(() -> new IllegalStateException(
-                    "That is more than the member owes, and every cycle has already paid out."));
-            allocate(payment, pot, null, remainder);
+            allocate(payment, openCycle.orElseThrow(), null, remainder);
         }
 
 
@@ -116,6 +117,35 @@ public class PaymentService {
         // that was never incoherent.
         broadcaster.broadcast();
         return new RecordedPayment(payment, allocationRepository.findByPaymentId(payment.getId()));
+    }
+
+    /**
+     * The most a member can pay right now, in its two halves: arrears, which Rule 7
+     * settles first, and what is left of the open cycle's contribution. Anything
+     * above the total is refused rather than potted — the system has no concept of
+     * credit, and a pot that grew past its target would hand the recipient a bonus.
+     */
+    public record MaxPayable(BigDecimal arrears, BigDecimal contributionDue) {
+        public BigDecimal total() {
+            return arrears.add(contributionDue);
+        }
+    }
+
+    /** The prefill and the input cap on the payment form — the same arithmetic recordPayment refuses by. */
+    @Transactional(readOnly = true)
+    public MaxPayable maxPayable(Long memberId) {
+        Member member = requireMember(memberId);
+        return calculateMaxPayable(member, cycleRepository.findOpenCycle(), arrearsService.outstandingFor(member));
+    }
+
+    private MaxPayable calculateMaxPayable(Member member, Optional<Cycle> openCycle, List<OutstandingDebt> owed) {
+        BigDecimal arrears = owed.stream()
+                .map(OutstandingDebt::outstanding)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal contributionDue = openCycle
+                .map(cycle -> arrearsService.contributionDueFor(cycle, member))
+                .orElse(BigDecimal.ZERO);
+        return new MaxPayable(arrears, contributionDue);
     }
 
     /**

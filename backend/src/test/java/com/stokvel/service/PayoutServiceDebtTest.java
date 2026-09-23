@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalStateException;
 
 /**
  * Rule 2 — a cycle's shortfall becomes tracked debt. One row per member who was
@@ -129,19 +130,21 @@ class PayoutServiceDebtTest {
     }
 
     /**
-     * Overpayment is not a negative debt. Sarah puts in R700; the excess lands in the
-     * same pot, and the subtraction is floored at zero rather than writing a row with
-     * a negative amount the CHECK would reject anyway.
+     * Overpayment is not a negative debt. PaymentService now refuses R700 against a
+     * R500 contribution, so paid > expected can no longer be reached through a
+     * payment — and the floor is asserted on the comparison itself instead. It stays
+     * because it is cheap, and a guard against a negative debt row should not depend
+     * on another service continuing to refuse things.
      */
     @Test
-    void overpaying_writes_no_row_and_no_negative_debt() {
-        paymentService.recordPayment(sarah.getId(), new BigDecimal("700.00"));
-        paymentService.recordPayment(thabo.getId(), CONTRIBUTION);
+    void overpaying_is_refused_and_the_comparison_is_still_floored_at_zero() {
+        assertThatIllegalStateException()
+                .isThrownBy(() -> paymentService.recordPayment(sarah.getId(), new BigDecimal("700.00")));
 
-        payoutService.firePayout(cycleOne());
-
-        assertThat(debtRepository.findAll()).isEmpty();
-        assertThat(potFor(cycleOne())).isEqualByComparingTo("1200.00");
+        ArrearsService.CycleShortfall overpaid =
+                new ArrearsService.CycleShortfall(sarah, CONTRIBUTION, new BigDecimal("700.00"));
+        assertThat(overpaid.shortfall()).isEqualByComparingTo("0.00");
+        assertThat(overpaid.isShort()).isFalse();
     }
 
     // ------------------------------------------------------------ the invariants
