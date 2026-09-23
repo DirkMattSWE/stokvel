@@ -965,9 +965,10 @@ edge cases are part of the design rather than a check on it.
      on the wire and unused, so "#1 · Dirk" and "#4 · Dirk" read as a duplicated row
      rather than the same member's turn in the next rotation.
 
-   Still open under item 7: the payment form should prefill and cap at the maximum
-   payable (backend built 2026-09-23, frontend pending — see *Overpayment is
-   refused*, below), and `addMember` still does not
+   **The payment form prefills and caps at the maximum payable — done 2026-09-23,
+   commit `be97e19`** (backend `e54c376`; see *Overpayment is refused*, below).
+
+   Still open under item 7: `addMember` still does not
    broadcast for a founding member, so a second browser window needs a manual reload
    to see one appear. That last one is the documented behaviour, not a regression —
    the question is whether "one push per user action" should now mean every add.
@@ -1000,6 +1001,7 @@ The backend's whole surface, so the React pass does not have to go looking:
 | `POST /api/setup/stokvel` | contribution, start date, rotation count — once |
 | `GET`/`POST /api/setup/members` | list in rotation order; add one (may return a buy-in) |
 | `POST /api/payments` | a member pays |
+| `GET /api/payments/max/{memberId}` | the most they can pay right now — prefills and caps the payment form |
 | `GET /api/clock` · `POST /api/clock/advance` | read the simulated date; move it |
 | `GET /api/cycles` | whose turn, pot vs target — *state right now* |
 | `GET /api/ledger` | initial load only — *what happened, in order* |
@@ -1116,7 +1118,8 @@ the spec describes (expected vs actual, per member per cycle), which needs
 member for a cycle, or a DTO with both sides. **Build-order pass 3a is where that gets
 answered** — Rule 2 cannot write a debt row without first asking who was short.
 
-**Overpayment is refused — decided 2026-09-21, backend built 2026-09-23.** There was
+**~~Overpayment is refused~~ — decided 2026-09-21, built 2026-09-23 (backend `e54c376`,
+frontend `be97e19`).** There was
 no rule for a member paying more than they owe, and the old behaviour was that the
 whole excess landed in the open cycle's pot: R700 against a R500 contribution made
 that month's recipient R200 better off, and the payer still owed R500 next month.
@@ -1152,8 +1155,29 @@ until it opens.
 moment the cap is derived from `payment.amount` instead of allocations.
 `PayoutServiceDebtTest.overpaying_…` became
 `overpaying_is_refused_and_the_comparison_is_still_floored_at_zero`, asserting the
-floor on the record. **The frontend half — prefill and `max` on the payment modal —
-is what remains.**
+floor on the record.
+
+**Frontend half — done 2026-09-23, commit `be97e19`.** Opening the payment modal
+fetches `GET /api/payments/max/{memberId}` through `App.jsx`
+(`handleFetchMaxPayable`), so `MemberPanel` still never touches the API. The amount
+is prefilled with `maxPayable` and the same figure is the input's `max`, so the
+member types *down* from what they owe; the browser blocks a higher amount on
+submit, and `recordPayment` refuses it regardless. The modal shows the breakdown
+(arrears + this cycle = at most) so the figure explains itself on stage.
+
+- **R0 shows no form at all**, just "owes nothing right now" — the backend's own
+  wording. This is what a late joiner sees for the round their buy-in covered:
+  `contributionDueFor` returns zero because they were not liable (Rule 3), so the
+  cap is the buy-in guardrail made visible rather than a separate check.
+- **The client computes nothing.** Max payable is fetched fresh on every open, never
+  derived from the cycles or arrears already on screen — the "decide it out loud"
+  question below, answered server-side.
+- **A response for a form that has since closed or switched member is dropped**, via
+  a ref holding which member's form is open. Without it, a slow response could put
+  one member's cap on another member's form.
+
+Not TDD'd, per *Testing*: transport and view. Verified by lint and build; the check
+is by hand in the running app.
 
 *The design notes below are kept for the reasoning.*
 
@@ -1180,7 +1204,7 @@ floor gets asserted at the record level instead. The floor in `CycleShortfall` s
 either way: it is cheap, and it is the kind of guard that should not depend on another
 service continuing to refuse things.
 
-**Still unimplemented as of 2026-09-22, and confirmed still wanted** — it was
+**Pre-build notes from 2026-09-22 (since built — line numbers below are as of then)** — it was
 rediscovered from the other direction, by paying an absurd amount into the running app
 and watching it land in the pot. What reading `recordPayment` settles before the work
 starts:
