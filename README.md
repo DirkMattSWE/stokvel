@@ -20,7 +20,6 @@ changes is the simulated date.
 | File | What it answers |
 |---|---|
 | [`CLAUDE.md`](CLAUDE.md) | **What was decided, and why.** The full design record: the schema, the business rules, the build order, and every decision that was revised along the way. Start here. |
-| [`docs/walkthrough.md`](docs/walkthrough.md) | What happens at runtime when a payment is recorded: which rows are written, in which order, by which class. |
 | [`stokvel-erd.html`](stokvel-erd.html) | The entity-relationship diagram. Open it in a browser. |
 
 ## Running it
