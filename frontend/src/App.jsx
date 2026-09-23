@@ -14,6 +14,7 @@ import {
   createStokvel,
   addMember,
   recordPayment,
+  fetchMaxPayable,
   advanceClock,
 } from './api.js'
 
@@ -132,6 +133,18 @@ function App() {
     }
   }
 
+  // A read, not a write — no refresh. Returns null on failure so the caller
+  // can close its form; the refusal text still lands in the error banner.
+  async function handleFetchMaxPayable(memberId) {
+    try {
+      setError(null)
+      return await fetchMaxPayable(memberId)
+    } catch (err) {
+      setError(err.message)
+      return null
+    }
+  }
+
   async function handleAdvanceClock(targetDate) {
     try {
       setError(null)
@@ -153,7 +166,12 @@ function App() {
       <Header config={config} onCreateStokvel={handleCreateStokvel} />
       <div className="panels">
         <ClockPanel config={config} onAdvanceClock={handleAdvanceClock} />
-        <MemberPanel members={members} onAddMember={handleAddMember} onRecordPayment={handleRecordPayment} />
+        <MemberPanel
+          members={members}
+          onAddMember={handleAddMember}
+          onRecordPayment={handleRecordPayment}
+          onFetchMaxPayable={handleFetchMaxPayable}
+        />
         <CyclePanel cycles={cycles} />
         <Ledger entries={ledger} />
       </div>

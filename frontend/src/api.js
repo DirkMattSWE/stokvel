@@ -71,6 +71,13 @@ export function recordPayment(memberId, amount) {
   })
 }
 
+// The most a member can pay right now — arrears plus what is left of this
+// cycle's contribution. Derived server-side by the same method recordPayment
+// refuses against, so the form's cap and the refusal are one number.
+export function fetchMaxPayable(memberId) {
+  return apiFetch(`/payments/max/${memberId}`)
+}
+
 export function fetchCycles() {
   return apiFetch('/cycles')
 }

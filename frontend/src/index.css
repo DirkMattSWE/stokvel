@@ -388,3 +388,9 @@ button:disabled {
   flex-direction: column;
   gap: 3px;
 }
+
+.payment-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
