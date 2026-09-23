@@ -168,6 +168,33 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
+/* ---- clock ---- */
+
+.advance-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.advance-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.advance-form input {
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text-h);
+}
+
 /* ---- members ---- */
 
 .member-list {
